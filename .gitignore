@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.cve-forge/
+runs/
+*.sqlite3
+*.db
+*.pem
+*.key
+.env
+.env.*
+.cve-forge/runs/*/mcp/

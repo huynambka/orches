@@ -1,0 +1,12 @@
+[project]
+name = "cve-forge"
+version = "0.1.0"
+description = "Automated CVE research and PoC generation powered by omp agents"
+requires-python = ">=3.11"
+
+[project.scripts]
+cve-forge = "cve_forge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
