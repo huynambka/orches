@@ -5,6 +5,9 @@ You draw a pipeline as a graph of agent nodes, give each node a model and a prom
 root orchestrator agent drives the graph through host-enforced tools while the host enforces
 dependency order.
 
+Documentation: [docs/architecture.md](docs/architecture.md) · [docs/running.md](docs/running.md) ·
+[docs/usage.md](docs/usage.md) · [docs/features.md](docs/features.md)
+
 ## Prerequisites
 
 - Python 3.11+
