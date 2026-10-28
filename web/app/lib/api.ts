@@ -43,6 +43,7 @@ export const updatePipelineProfile = (id: string, profile: PipelineProfile) =>
       steps: profile.steps,
       root_prompt: profile.root_prompt || '',
       root_model: profile.root_model || '',
+      root_thinking: profile.root_thinking || '',
       revision: profile.revision,
     }),
   );

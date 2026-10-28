@@ -100,6 +100,7 @@ const textOf = (entry: ConversationEntry) => (entry.kind === 'tool' ? '' : entry
           <article v-else :class="`conversation-message conversation-${entry.kind}`">
             <div class="conversation-speaker">{{ entry.kind === 'assistant' ? 'Agent' : 'Output' }}<span v-if="entry.pending"> · writing…</span></div>
             <div v-if="entry.kind === 'assistant' && structuredOf(entry) !== undefined" class="conversation-structured"><StructuredValue :value="structuredOf(entry)" /></div>
+            <AgentMarkdown v-else-if="entry.kind === 'assistant'" :text="entry.text" />
             <div v-else class="conversation-text">{{ textOf(entry) }}</div>
           </article>
         </template>

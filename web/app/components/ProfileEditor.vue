@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { VueFlow, useVueFlow, ConnectionMode, type Connection, type Edge, type Node, type NodeChange, type EdgeChange } from '@vue-flow/core';
+import { VueFlow, useVueFlow, ConnectionMode, MarkerType, type Connection, type Edge, type Node, type NodeChange, type EdgeChange } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { MiniMap } from '@vue-flow/minimap';
 import { getOmpModels, getPipelineProfile, updatePipelineProfile, type OmpModel } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
-import { connectSteps, connectionError, layoutProfileSteps, removeDependency, removeStep, validateProfileDraft } from '~/lib/profileGraph';
-import type { PipelineProfile, PipelineStep } from '~/lib/types';
+import { anchorSides, connectSteps, connectionError, insertStepBetween, layoutProfileSteps, POSITION_BOUND, removeDependency, removeStep, validateProfileDraft } from '~/lib/profileGraph';
+import { DEFAULT_THINKING, THINKING_LEVELS, type PipelineProfile, type PipelineStep } from '~/lib/types';
 
 const props = defineProps<{ profile: PipelineProfile }>();
 const emit = defineEmits<{ saved: [PipelineProfile]; cancel: [] }>();
 
-interface Snapshot { name: string; steps: PipelineStep[]; rootPrompt: string; rootModel: string }
+interface Snapshot { name: string; steps: PipelineStep[]; rootPrompt: string; rootModel: string; rootThinking: PipelineProfile['root_thinking'] }
 
 const snapshotOf = (profile: PipelineProfile): Snapshot => ({
   name: profile.name, steps: cloneSteps(profile.steps),
-  rootPrompt: profile.root_prompt || '', rootModel: profile.root_model || '',
+  rootPrompt: profile.root_prompt || '', rootModel: profile.root_model || '', rootThinking: profile.root_thinking || '',
 });
 
 const nodeId = () => `node_${crypto.randomUUID().replaceAll('-', '')}`;
@@ -27,6 +27,7 @@ const name = ref(props.profile.name);
 const steps = ref<PipelineStep[]>(cloneSteps(props.profile.steps));
 const rootPrompt = ref(props.profile.root_prompt || '');
 const rootModel = ref(props.profile.root_model || '');
+const rootThinking = ref<PipelineProfile['root_thinking']>(props.profile.root_thinking || '');
 const revision = ref(props.profile.revision ?? 1);
 const baseline = ref<Snapshot>(snapshotOf(props.profile));
 
@@ -46,6 +47,7 @@ const canvasEl = ref<HTMLElement | null>(null);
 const snapshotEquals = (a: Snapshot, b: Snapshot) => JSON.stringify(a) === JSON.stringify(b);
 const currentSnapshot = (): Snapshot => ({
   name: name.value, steps: cloneSteps(steps.value), rootPrompt: rootPrompt.value, rootModel: rootModel.value,
+  rootThinking: rootThinking.value,
 });
 const dirty = computed(() => !snapshotEquals(currentSnapshot(), baseline.value));
 
@@ -80,6 +82,7 @@ const applySnapshot = (snapshot: Snapshot) => {
   steps.value = cloneSteps(snapshot.steps);
   rootPrompt.value = snapshot.rootPrompt;
   rootModel.value = snapshot.rootModel;
+  rootThinking.value = snapshot.rootThinking;
   if (selectedNode.value && selectedNode.value !== 'root'
     && !snapshot.steps.some((step) => step.id === selectedNode.value)) selectedNode.value = null;
   selectedEdgeId.value = null;
@@ -104,12 +107,24 @@ const redo = () => {
 /* ------------------------------------------------------------- models */
 const loadModels = () =>
   getOmpModels()
-    .then((result) => { models.value = result.models; modelError.value = ''; })
+    .then((result) => {
+      models.value = result.models;
+      modelError.value = '';
+      // Agents added while the model list was still loading default to the
+      // first available model instead of staying unsaveable with no model.
+      const fallback = result.models[0]?.selector;
+      if (fallback && steps.value.some((step) => !step.model_selector)) {
+        steps.value = steps.value.map((step) =>
+          step.model_selector ? step : { ...step, model_selector: fallback },
+        );
+      }
+    })
     .catch((error: unknown) => { modelError.value = error instanceof Error ? error.message : 'Unable to load models'; });
 
 onMounted(() => { void loadModels(); });
 
 /* --------------------------------------------------------------- graph */
+const ROOT_POSITION = { x: -220, y: 120 };
 const nodes = computed<Node[]>(() => {
   const workers = steps.value.map((step, index) => ({
     id: step.id,
@@ -121,7 +136,7 @@ const nodes = computed<Node[]>(() => {
     deletable: true,
   } satisfies Node));
   const root: Node = {
-    id: 'root', type: 'root', position: { x: -220, y: 120 }, data: { label: 'Root orchestrator' },
+    id: 'root', type: 'root', position: ROOT_POSITION, data: { label: 'Root orchestrator' },
     class: selectedNode.value === 'root' ? 'is-selected' : undefined,
     draggable: false, selectable: true, connectable: false, deletable: false,
   };
@@ -129,15 +144,25 @@ const nodes = computed<Node[]>(() => {
 });
 
 const edges = computed<Edge[]>(() => {
+  const positions = new Map<string, { x: number; y: number }>([
+    ['root', ROOT_POSITION],
+    ...steps.value.map((step, index) => [step.id, step.position || positionFor(index)] as const),
+  ]);
+  const anchors = (source: string, target: string) => {
+    const sides = anchorSides(positions.get(source)!, positions.get(target)!);
+    return { sourceHandle: sides.source, targetHandle: sides.target };
+  };
+  const markerEnd = { type: MarkerType.ArrowClosed, color: 'var(--faint)', width: 18, height: 18 };
   const rootEdges = steps.value
     .filter((step) => step.depends_on.length === 0)
     .map((step) => ({
-      id: `root=>${step.id}`, source: 'root', target: step.id, sourceHandle: 'out', targetHandle: 'in',
-      selectable: false, deletable: false,
+      id: `root=>${step.id}`, source: 'root', target: step.id, ...anchors('root', step.id),
+      type: 'insert', markerEnd, selectable: false, deletable: false, updatable: false,
     }) satisfies Edge);
   const depEdges = steps.value.flatMap((step) =>
     step.depends_on.map((source) => ({
-      id: `${source}=>${step.id}`, source, target: step.id, sourceHandle: 'out', targetHandle: 'in',
+      id: `${source}=>${step.id}`, source, target: step.id, ...anchors(source, step.id),
+      type: 'insert', markerEnd, updatable: true,
       class: `${source}=>${step.id}` === selectedEdgeId.value ? 'is-selected' : undefined,
       selectable: true, deletable: true,
     }) satisfies Edge),
@@ -235,6 +260,27 @@ const onConnect = (connection: Connection) => {
   commit(() => { steps.value = connectSteps(steps.value, source, target); });
 };
 
+const onEdgeUpdate = ({ edge, connection }: { edge: Edge; connection: Connection }) => {
+  if (edge.source === 'root') return;
+  const { source, target } = connection;
+  if (source === edge.source && target === edge.target) return;
+  if (source === 'root' || target === 'root') {
+    connectNotice.value = 'Root links are automatic for agents without dependencies.';
+    return;
+  }
+  // Validate the replacement graph, not the graph containing the old edge.
+  // Invalid drops leave the original dependency and undo history untouched.
+  const withoutEdge = removeDependency(steps.value, edge.source, edge.target);
+  const reason = connectionError(withoutEdge, source, target);
+  if (reason) {
+    connectNotice.value = reason;
+    return;
+  }
+  connectNotice.value = '';
+  commit(() => { steps.value = connectSteps(withoutEdge, source, target); });
+  selectedEdgeId.value = `${source}=>${target}`;
+};
+
 const addAgent = (position?: { x: number; y: number }) => {
   if (steps.value.length >= 64) {
     connectNotice.value = 'Profiles may contain at most 64 agents.';
@@ -246,7 +292,7 @@ const addAgent = (position?: { x: number; y: number }) => {
       ...steps.value,
       {
         id, name: 'New agent', model_selector: models.value[0]?.selector || '', prompt: '',
-        depends_on: [], position: position ?? positionFor(steps.value.length),
+        depends_on: [], position: position ?? positionFor(steps.value.length), thinking: DEFAULT_THINKING,
       },
     ];
   });
@@ -261,10 +307,43 @@ const deleteSelectedAgent = () => {
   selectedNode.value = null;
 };
 
-const removeConnection = () => {
-  if (!selectedEdgeId.value) return;
-  const { source, target } = edgeEndpoints(selectedEdgeId.value);
+const removeEdgeById = (edgeId: string) => {
+  const { source, target } = edgeEndpoints(edgeId);
+  if (source === 'root') return; // root links are automatic, never user-removed
   commit(() => { steps.value = removeDependency(steps.value, source, target); });
+  if (selectedEdgeId.value === edgeId) selectedEdgeId.value = null;
+};
+
+const removeConnection = () => {
+  if (selectedEdgeId.value) removeEdgeById(selectedEdgeId.value);
+};
+
+const clampCoord = (value: number) => Math.min(POSITION_BOUND, Math.max(-POSITION_BOUND, value));
+
+/** Insert a fresh agent into an edge: source → new → target. */
+const insertOnEdge = (edgeId: string) => {
+  if (steps.value.length >= 64) {
+    connectNotice.value = 'Profiles may contain at most 64 agents.';
+    return;
+  }
+  const { source, target } = edgeEndpoints(edgeId);
+  const targetStep = steps.value.find((step) => step.id === target);
+  const sourcePosition = source === 'root'
+    ? ROOT_POSITION
+    : steps.value.find((step) => step.id === source)?.position;
+  if (!targetStep || !sourcePosition) return;
+  const id = nodeId();
+  const inserted = insertStepBetween(steps.value, source, target, {
+    id, name: 'New agent', model_selector: models.value[0]?.selector || '', prompt: '',
+    depends_on: [], thinking: DEFAULT_THINKING,
+    position: {
+      x: clampCoord((sourcePosition.x + targetStep.position.x) / 2),
+      y: clampCoord((sourcePosition.y + targetStep.position.y) / 2),
+    },
+  });
+  if (inserted === steps.value) return;
+  commit(() => { steps.value = inserted; });
+  selectedNode.value = id;
   selectedEdgeId.value = null;
 };
 
@@ -304,13 +383,21 @@ const validate = () => {
 
 const save = async () => {
   if (saving.value) return;
+  // Surface problems client-side instead of letting the backend 400 and
+  // leaving the draft looking saveable.
+  const problems = validateProfileDraft(name.value, steps.value, rootPrompt.value);
+  if (problems.length) {
+    validation.value = problems;
+    saveError.value = 'Fix the listed problems before saving.';
+    return;
+  }
   saving.value = true;
   saveError.value = '';
   conflict.value = false;
   try {
     const saved = await updatePipelineProfile(props.profile.id, {
       id: props.profile.id, name: name.value.trim(), root_prompt: rootPrompt.value,
-      root_model: rootModel.value, steps: steps.value, revision: revision.value,
+      root_model: rootModel.value, root_thinking: rootThinking.value, steps: steps.value, revision: revision.value,
     });
     revision.value = saved.revision ?? revision.value + 1;
     baseline.value = snapshotOf(saved);
@@ -485,18 +572,20 @@ watch(edges, (value) => setEdges(value), { immediate: true });
           <span class="profile-node-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.4-3.2 4-5 7-5s5.6 1.8 7 5" /></svg></span>
           Agent
         </button>
-        <span class="palette-hint">Click to add, or drag onto the canvas. Connect the right handle of one agent to the left handle of another to add a dependency.</span>
+        <span class="palette-hint">Click to add, or drag onto the canvas. Drag from one agent handle to another: the arrow points to the dependent agent. Drag either end of a dependency edge to reconnect it; anchors face the connected node automatically.</span>
       </aside>
       <div ref="canvasEl" class="editor-canvas" @dragover="onCanvasDragOver" @drop="onCanvasDrop">
         <ClientOnly>
           <VueFlow
             :id="flowId"
             :apply-default="false"
-            :connection-mode="ConnectionMode.Strict"
+            :connection-mode="ConnectionMode.Loose"
             :delete-key-code="['Backspace', 'Delete']"
-            :edges-updatable="false"
+            :edges-updatable="true"
+            :edge-updater-radius="12"
             fit-view-on-init
             @connect="onConnect"
+            @edge-update="onEdgeUpdate"
             @nodes-change="onNodesChange"
             @node-drag-stop="onNodeDragStop"
             @edges-change="onEdgesChange"
@@ -506,6 +595,21 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             </template>
             <template #node-root="rootProps">
               <ProfileRootNode :data="rootProps.data" />
+            </template>
+            <template #edge-insert="edgeProps">
+              <ProfileInsertEdge
+                :id="edgeProps.id"
+                :source-x="edgeProps.sourceX"
+                :source-y="edgeProps.sourceY"
+                :target-x="edgeProps.targetX"
+                :target-y="edgeProps.targetY"
+                :source-position="edgeProps.sourcePosition"
+                :target-position="edgeProps.targetPosition"
+                :marker-end="edgeProps.markerEnd"
+                :removable="!edgeProps.id.startsWith('root=>')"
+                @insert="insertOnEdge"
+                @remove="removeEdgeById"
+              />
             </template>
             <Background pattern-color="var(--canvas-dot)" :gap="18" />
             <Controls />
@@ -532,6 +636,16 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             <option value="">Server default ([roles.root] in orches.toml)</option>
             <option v-if="rootModelMissing" :value="rootModel">{{ rootModel }} (unavailable)</option>
             <option v-for="model in models" :key="model.selector" :value="model.selector">{{ model.name }} · {{ model.provider }}</option>
+          </select></label>
+          <label>Orchestrator effort<select
+            class="control"
+            :value="rootThinking"
+            @focus="beginTextEdit"
+            @blur="endTextEdit"
+            @change="rootThinking = ($event.target as HTMLSelectElement).value as PipelineProfile['root_thinking']"
+          >
+            <option value="">Server default ([roles.root] in orches.toml)</option>
+            <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
           <label>Orchestrator prompt<textarea
             class="control"
@@ -565,6 +679,15 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             <option value="">Select a model</option>
             <option v-if="selectedModelMissing" :value="selectedAgent.model_selector">{{ selectedAgent.model_selector }} (unavailable)</option>
             <option v-for="model in models" :key="model.selector" :value="model.selector">{{ model.name }} · {{ model.provider }}</option>
+          </select></label>
+          <label>Effort<select
+            class="control"
+            :value="selectedAgent.thinking"
+            @focus="beginTextEdit"
+            @blur="endTextEdit"
+            @change="updateSelected({ thinking: ($event.target as HTMLSelectElement).value as PipelineStep['thinking'] })"
+          >
+            <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
           <label>Prompt<textarea
             class="control"

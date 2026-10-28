@@ -28,7 +28,7 @@ from .project_files import (
     ProjectDirectoryError, app_root, assert_project_marker, cleanup_orphan_runs,
     ensure_project_marker, read_marker, remove_owned_run, validate_project_directory,
 )
-from .state import ProjectConflictError, StateStore
+from .state import ConnectionUseError, ProjectConflictError, StateStore
 
 _TERMINAL = {"completed", "failed", "blocked"}
 _LOG = logging.getLogger("orches.api")
@@ -295,6 +295,8 @@ def _safe_connection(record: dict[str, Any]) -> dict[str, Any]:
         "os": record["os"],
         "ip": record["ip"],
         "has_cred": record["cred"] is not None,
+        "in_use": record["in_use"],
+        "used_by": record["used_by"],
         "created_at": record["created_at"],
         "updated_at": record["updated_at"],
     }
@@ -393,10 +395,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def update_pipeline_profile(profile_id: str, request: Request) -> dict[str, Any]:
         _require_local(request)
         payload = await _json_object(request)
-        if set(payload) - {"root_prompt", "root_model"} != {"name", "steps", "revision"}:
+        if set(payload) - {"root_prompt", "root_model", "root_thinking"} != {"name", "steps", "revision"}:
             raise HTTPException(
                 status_code=400,
-                detail="body must contain name, steps and revision, and may contain root_prompt and root_model",
+                detail="body must contain name, steps and revision, and may contain root_prompt, root_model and root_thinking",
             )
         if profile_store.get(profile_id) is None:
             raise HTTPException(status_code=404, detail="pipeline profile not found")
@@ -408,6 +410,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "steps": payload["steps"],
             "root_prompt": payload.get("root_prompt", ""),
             "root_model": payload.get("root_model", ""),
+            "root_thinking": payload.get("root_thinking", ""),
         }
         try:
             return profile_store.update(profile_id, definition, payload["revision"])
@@ -744,7 +747,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def update_connection(connection_id: str, request: Request) -> dict[str, Any]:
         _require_local(request)
         settings = _connection_settings(await _json_object(request), creating=False)
-        record = state.update_connection(connection_id, **settings)
+        try:
+            record = state.update_connection(connection_id, **settings)
+        except ConnectionUseError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if record is None:
             raise HTTPException(status_code=404, detail="connection not found")
         return _safe_connection(record)
@@ -752,7 +758,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.delete("/api/connections/{connection_id}")
     def delete_connection(connection_id: str, request: Request) -> dict[str, bool]:
         _require_local(request)
-        if not state.delete_connection(connection_id):
+        try:
+            deleted = state.delete_connection(connection_id)
+        except ConnectionUseError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not deleted:
             raise HTTPException(status_code=404, detail="connection not found")
         return {"deleted": True}
 

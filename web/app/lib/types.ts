@@ -3,6 +3,11 @@ export type AgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'bloc
 export type AgentId = string;
 export interface AgentPosition { x: number; y: number; }
 
+/** omp `--thinking` levels accepted by the backend profile validator. */
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto'] as const;
+export type ThinkingLevel = typeof THINKING_LEVELS[number];
+export const DEFAULT_THINKING: ThinkingLevel = 'medium';
+
 export interface PipelineStep {
   id: string;
   name: string;
@@ -10,6 +15,8 @@ export interface PipelineStep {
   prompt: string;
   depends_on: string[];
   position: AgentPosition;
+  /** Reasoning effort for this agent's omp session. */
+  thinking: ThinkingLevel;
 }
 
 export interface PipelineProfile {
@@ -19,6 +26,8 @@ export interface PipelineProfile {
   root_prompt?: string;
   /** Model for the root orchestrator; empty/absent uses the server's [roles.root] default. */
   root_model?: string;
+  /** Effort for the root orchestrator; empty/absent uses the server's [roles.root] default. */
+  root_thinking?: ThinkingLevel | '';
   revision?: number;
 }
 
@@ -127,6 +136,8 @@ export interface Connection {
   os: string;
   ip: string | null;
   has_cred: boolean;
+  in_use: boolean;
+  used_by: { run_id: string; role: string } | null;
   created_at: string;
   updated_at: string;
 }

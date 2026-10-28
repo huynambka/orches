@@ -1,4 +1,4 @@
-import type { PipelineStep } from './types';
+import { THINKING_LEVELS, type AgentPosition, type PipelineStep } from './types';
 
 const byId = (steps: PipelineStep[]) => new Map(steps.map((step) => [step.id, step]));
 
@@ -56,6 +56,37 @@ export const removeDependency = (steps: PipelineStep[], source: string, target: 
   );
 };
 
+/**
+ * Splice a brand-new step into an existing edge: `source → insert → target`.
+ * `source` may be `'root'`, covering the implicit edge to a dependency-free
+ * target. Returns the same reference when the edge or ids are not as drawn.
+ */
+export const insertStepBetween = (
+  steps: PipelineStep[],
+  source: string,
+  target: string,
+  insert: PipelineStep,
+): PipelineStep[] => {
+  const targetStep = steps.find((step) => step.id === target);
+  if (!targetStep || steps.some((step) => step.id === insert.id)) return steps;
+  if (source === 'root') {
+    if (targetStep.depends_on.length > 0) return steps;
+    return [
+      ...steps.map((step) => (step.id === target ? { ...step, depends_on: [insert.id] } : step)),
+      { ...insert, depends_on: [] },
+    ];
+  }
+  if (!steps.some((step) => step.id === source) || !targetStep.depends_on.includes(source)) return steps;
+  return [
+    ...steps.map((step) =>
+      step.id === target
+        ? { ...step, depends_on: step.depends_on.map((dependency) => (dependency === source ? insert.id : dependency)) }
+        : step,
+    ),
+    { ...insert, depends_on: [source] },
+  ];
+};
+
 /** Human-readable reason a source→target dependency is not allowed; null when valid. */
 export const connectionError = (steps: PipelineStep[], source: string, target: string): string | null => {
   if (source === target) return 'An agent cannot depend on itself.';
@@ -66,7 +97,25 @@ export const connectionError = (steps: PipelineStep[], source: string, target: s
   return null;
 };
 
-const POSITION_BOUND = 10000;
+export type AnchorSide = 'left' | 'right' | 'top' | 'bottom';
+
+/**
+ * Facing edge anchors from relative node positions: horizontal handles when the
+ * displacement is mostly horizontal (|dx| >= |dy|), vertical handles otherwise.
+ */
+export const anchorSides = (
+  source: AgentPosition,
+  target: AgentPosition,
+): { source: AnchorSide; target: AnchorSide } => {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? { source: 'right', target: 'left' } : { source: 'left', target: 'right' };
+  }
+  return dy >= 0 ? { source: 'bottom', target: 'top' } : { source: 'top', target: 'bottom' };
+};
+
+export const POSITION_BOUND = 10000;
 const COLUMN_GAP = 280;
 const ROW_GAP = 150;
 const ORIGIN = { x: 80, y: 80 };
@@ -128,6 +177,7 @@ export const validateProfileDraft = (
     if (!step.model_selector.trim()) problems.push(`Agent "${label}" has no model selected.`);
     if (step.model_selector.length > MAX_MODEL) problems.push(`Agent "${label}" model selector is too long.`);
     if (step.prompt.length > MAX_PROMPT) problems.push(`Agent "${label}" prompt must be at most ${MAX_PROMPT} characters.`);
+    if (!(THINKING_LEVELS as readonly string[]).includes(step.thinking)) problems.push(`Agent "${label}" has an invalid effort level.`);
     if (!Number.isFinite(step.position.x) || !Number.isFinite(step.position.y)
       || Math.abs(step.position.x) > POSITION_BOUND || Math.abs(step.position.y) > POSITION_BOUND) {
       problems.push(`Agent "${label}" position is out of bounds.`);

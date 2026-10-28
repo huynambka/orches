@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { VueFlow, type Edge, type Node } from '@vue-flow/core';
+import { ConnectionMode, MarkerType, VueFlow, type Edge, type Node } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { MiniMap } from '@vue-flow/minimap';
 import { saveAgentPosition } from '~/lib/api';
+import { anchorSides } from '~/lib/profileGraph';
 import type { AgentId, AgentLayout, AgentStatus, PipelineStep } from '~/lib/types';
 
 const props = withDefaults(defineProps<{
@@ -58,13 +59,23 @@ const visibleRoles = computed<AgentId[]>(() => ['root', ...props.steps.map((step
 const nodes = ref<Node[]>(visibleRoles.value.map(makeNode));
 
 const edges = computed<Edge[]>(() => {
+  // Read live node positions so anchors flip while dragging, not only on reload.
+  const positions = new Map(nodes.value.map((node) => [node.id, node.position]));
+  const anchors = (source: string, target: string) => {
+    const from = positions.get(source);
+    const to = positions.get(target);
+    if (!from || !to) return {};
+    const sides = anchorSides(from, to);
+    return { sourceHandle: sides.source, targetHandle: sides.target };
+  };
   const result: Edge[] = [];
+  const markerEnd = { type: MarkerType.ArrowClosed, color: 'var(--faint)', width: 18, height: 18 };
   for (const step of props.steps.filter((item) => item.depends_on.length === 0)) {
-    result.push({ id: `root-${step.id}`, source: 'root', target: step.id, animated: props.animated });
+    result.push({ id: `root-${step.id}`, source: 'root', target: step.id, ...anchors('root', step.id), markerEnd, animated: props.animated });
   }
   for (const step of props.steps) {
     for (const dependency of step.depends_on) {
-      result.push({ id: `${dependency}-${step.id}`, source: dependency, target: step.id, animated: props.animated });
+      result.push({ id: `${dependency}-${step.id}`, source: dependency, target: step.id, ...anchors(dependency, step.id), markerEnd, animated: props.animated });
     }
   }
   return result;
@@ -126,6 +137,7 @@ const onNodeDragStop = ({ node }: { node: Node }) => {
           v-model:nodes="nodes"
           :edges="edges"
           :nodes-connectable="false"
+          :connection-mode="ConnectionMode.Loose"
           :delete-key-code="null"
           :nodes-draggable="nodesDraggable"
           fit-view-on-init

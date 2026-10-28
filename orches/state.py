@@ -21,7 +21,7 @@ from .models import (
 
 _LOG = logging.getLogger("orches.state")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LEGACY_APP_DIR = ".cve-forge"
 LEGACY_MARKER = "project.json"
 
@@ -44,6 +44,10 @@ class ProjectConflictError(StateError):
 
 class ArtifactConflictError(StateError):
     """An artifact path already exists with different content."""
+
+
+class ConnectionUseError(StateError):
+    """A connection is claimed by a live agent or the caller does not own it."""
 
 
 class LegacyMigrationError(StateError):
@@ -106,6 +110,12 @@ CREATE TABLE IF NOT EXISTS connections (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS connection_claims (
+    connection_id TEXT PRIMARY KEY REFERENCES connections(connection_id) ON DELETE CASCADE,
+    invocation_id INTEGER NOT NULL REFERENCES agent_invocations(id) ON DELETE CASCADE,
+    claimed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS connection_claims_invocation_idx ON connection_claims(invocation_id);
 CREATE TABLE IF NOT EXISTS project_agent_positions (
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     role TEXT NOT NULL,
@@ -421,6 +431,39 @@ class StateStore:
             return {row["role"]: {"x": float(row["x"]), "y": float(row["y"])} for row in rows}
 
     # ----------------------------------------------------------- connections
+    _CONNECTION_USAGE_SQL = """
+        SELECT c.*, cl.invocation_id AS _claim_invocation_id,
+               ai.run_id AS _claim_run_id, ai.role AS _claim_role
+        FROM connections c
+        LEFT JOIN connection_claims cl ON cl.connection_id = c.connection_id
+        LEFT JOIN agent_invocations ai ON ai.id = cl.invocation_id
+    """
+
+    @staticmethod
+    def _connection_record(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        invocation_id = record.pop("_claim_invocation_id", None)
+        run_id = record.pop("_claim_run_id", None)
+        role = record.pop("_claim_role", None)
+        record["in_use"] = invocation_id is not None
+        record["used_by"] = {"run_id": run_id, "role": role} if invocation_id is not None else None
+        return record
+
+    def _connection_row(self, conn: sqlite3.Connection, connection_id: str) -> sqlite3.Row | None:
+        return conn.execute(
+            f"{self._CONNECTION_USAGE_SQL} WHERE c.connection_id=?", (connection_id,)
+        ).fetchone()
+
+    @staticmethod
+    def _require_live_invocation(conn: sqlite3.Connection, invocation_id: int) -> None:
+        live = conn.execute(
+            """SELECT 1 FROM agent_invocations ai JOIN runs r ON r.run_id = ai.run_id
+               WHERE ai.id=? AND ai.status='running' AND r.status='running'""",
+            (invocation_id,),
+        ).fetchone()
+        if live is None:
+            raise ConnectionUseError("agent invocation is not running")
+
     def create_connection(
         self, *, name: str, os: str, ip: str | None = None, cred: str | None = None,
     ) -> dict[str, Any]:
@@ -441,21 +484,70 @@ class StateStore:
                 (record["connection_id"], name, os, ip, cred,
                  record["created_at"], record["updated_at"]),
             )
+        record["in_use"] = False
+        record["used_by"] = None
         return record
+
+    def claim_connection(self, connection_id: str, invocation_id: int) -> dict[str, Any]:
+        """Register exclusive use of a connection by one live agent invocation."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_live_invocation(conn, invocation_id)
+            if self._connection_row(conn, connection_id) is None:
+                raise ConnectionUseError("unknown connection id")
+            claim = conn.execute(
+                "SELECT invocation_id FROM connection_claims WHERE connection_id=?",
+                (connection_id,),
+            ).fetchone()
+            if claim is None:
+                conn.execute(
+                    "INSERT INTO connection_claims(connection_id,invocation_id,claimed_at) VALUES(?,?,?)",
+                    (connection_id, invocation_id, utc_now()),
+                )
+            elif claim["invocation_id"] != invocation_id:
+                raise ConnectionUseError("connection is in use")
+            return self._connection_record(self._connection_row(conn, connection_id))
+
+    def release_connection(self, connection_id: str, invocation_id: int) -> dict[str, Any]:
+        """Release a claim held by this invocation; only the owner may release."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_live_invocation(conn, invocation_id)
+            if self._connection_row(conn, connection_id) is None:
+                raise ConnectionUseError("unknown connection id")
+            claim = conn.execute(
+                "SELECT invocation_id FROM connection_claims WHERE connection_id=?",
+                (connection_id,),
+            ).fetchone()
+            if claim is None or claim["invocation_id"] != invocation_id:
+                raise ConnectionUseError("connection is not claimed by this agent")
+            conn.execute("DELETE FROM connection_claims WHERE connection_id=?", (connection_id,))
+            return self._connection_record(self._connection_row(conn, connection_id))
+
+    def reveal_claimed_connection(self, connection_id: str, invocation_id: int) -> dict[str, Any]:
+        """Return a connection with its credential, only to the live claim owner."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_live_invocation(conn, invocation_id)
+            row = self._connection_row(conn, connection_id)
+            if row is None:
+                raise ConnectionUseError("unknown connection id")
+            record = self._connection_record(row)
+            if not record["in_use"] or row["_claim_invocation_id"] != invocation_id:
+                raise ConnectionUseError("connection is not claimed by this agent")
+            return record
 
     def list_connections(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM connections ORDER BY created_at ASC, connection_id ASC"
+                f"{self._CONNECTION_USAGE_SQL} ORDER BY c.created_at ASC, c.connection_id ASC"
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._connection_record(row) for row in rows]
 
     def get_connection(self, connection_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM connections WHERE connection_id=?", (connection_id,)
-            ).fetchone()
-        return dict(row) if row else None
+            row = self._connection_row(conn, connection_id)
+        return self._connection_record(row) if row else None
 
     def update_connection(self, connection_id: str, **changes: Any) -> dict[str, Any] | None:
         allowed = {"name", "os", "ip", "cred"}
@@ -463,24 +555,26 @@ class StateStore:
             raise ValueError(f"unsupported connection fields: {sorted(changes.keys() - allowed)}")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            current = conn.execute(
-                "SELECT * FROM connections WHERE connection_id=?", (connection_id,)
-            ).fetchone()
+            current = self._connection_row(conn, connection_id)
             if current is None:
                 return None
+            if current["_claim_invocation_id"] is not None:
+                raise ConnectionUseError("connection is in use")
             if changes:
                 assignments = ", ".join(f"{key}=?" for key in changes)
                 conn.execute(
                     f"UPDATE connections SET {assignments},updated_at=? WHERE connection_id=?",
                     (*changes.values(), utc_now(), connection_id),
                 )
-            row = conn.execute(
-                "SELECT * FROM connections WHERE connection_id=?", (connection_id,)
-            ).fetchone()
-            return dict(row)
+            return self._connection_record(self._connection_row(conn, connection_id))
 
     def delete_connection(self, connection_id: str) -> bool:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM connection_claims WHERE connection_id=?", (connection_id,)
+            ).fetchone():
+                raise ConnectionUseError("connection is in use")
             cursor = conn.execute("DELETE FROM connections WHERE connection_id=?", (connection_id,))
             return cursor.rowcount == 1
 
@@ -522,12 +616,17 @@ class StateStore:
         stderr_artifact_id: str | None,
     ) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """UPDATE agent_invocations SET status=?,finished_at=?,returncode=?,error=?,
                    output_artifact_id=?,stderr_artifact_id=? WHERE id=?""",
                 (status.value, finished_at, returncode, error, output_artifact_id,
                  stderr_artifact_id, invocation_id),
             )
+            if status != AgentStatus.RUNNING:
+                conn.execute(
+                    "DELETE FROM connection_claims WHERE invocation_id=?", (invocation_id,)
+                )
 
     # ------------------------------------------------------------------ runs
     def _set_project_after_run(self, conn: sqlite3.Connection, run_id: str, status: str) -> None:
@@ -607,6 +706,14 @@ class StateStore:
                 removed.append((str(project["project_id"]), old_ids))
         return removed
 
+    @staticmethod
+    def _release_run_claims(conn: sqlite3.Connection, run_id: str) -> None:
+        conn.execute(
+            """DELETE FROM connection_claims WHERE invocation_id IN
+               (SELECT id FROM agent_invocations WHERE run_id=?)""",
+            (run_id,),
+        )
+
     def fail_interrupted_api_runs(self) -> None:
         """Recover browser-initiated work abandoned by a prior API process."""
         with self._connect() as conn:
@@ -619,14 +726,18 @@ class StateStore:
                     "UPDATE runs SET status='failed',error=?,updated_at=? WHERE run_id=?",
                     ("API stopped before run completed", utc_now(), row["run_id"]),
                 )
+                self._release_run_claims(conn, row["run_id"])
                 self._set_project_after_run(conn, row["run_id"], "failed")
 
     def update_run(self, run_id: str, status: str, error: str | None = None) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE runs SET status=?, error=?, updated_at=? WHERE run_id=?",
                 (status, error, utc_now(), run_id),
             )
+            if status in {"completed", "failed", "blocked"}:
+                self._release_run_claims(conn, run_id)
             if status in {"running", "completed", "failed", "blocked"}:
                 self._set_project_after_run(conn, run_id, status)
 

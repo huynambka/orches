@@ -132,6 +132,11 @@ const reveal = async (connection: Connection) => {
     formError.value = caught instanceof Error ? caught.message : 'Unable to reveal credential';
   }
 };
+
+const usageLabel = (connection: Connection) =>
+  connection.in_use && connection.used_by
+    ? `Using · ${connection.used_by.role} (run ${connection.used_by.run_id.slice(0, 8)})`
+    : 'Available';
 </script>
 
 <template>
@@ -139,7 +144,7 @@ const reveal = async (connection: Connection) => {
     <ConfirmDialog ref="confirmDialog" />
     <div class="page-header">
       <h1 class="detail-title">Connections</h1>
-      <span class="page-help">Informational address book of machines you work with — Orches never connects to or executes anything on them.</span>
+      <span class="page-help">Address book of machines your agents work with — pipeline agents can list these and reveal a credential via host tools; Orches itself never connects to them.</span>
     </div>
     <div v-if="error" class="error-state" role="alert"><span>{{ error }}</span><button class="control" @click="() => void load()">Retry</button></div>
     <section class="panel project-config" aria-label="Connection form">
@@ -175,7 +180,7 @@ const reveal = async (connection: Connection) => {
       </div>
       <div v-if="loading && !connections.length" class="empty-state"><strong>Loading connections…</strong></div>
       <div v-else-if="connections.length" class="tableWrap"><table>
-        <thead><tr><th scope="col">Name</th><th scope="col">OS</th><th scope="col">IP</th><th scope="col">Credential</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <thead><tr><th scope="col">Name</th><th scope="col">OS</th><th scope="col">IP</th><th scope="col">Credential</th><th scope="col">Usage</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
           <tr v-for="connection in connections" :key="connection.connection_id">
             <td class="row-title">{{ connection.name }}</td>
@@ -188,12 +193,13 @@ const reveal = async (connection: Connection) => {
               </template>
               <template v-else>Not set</template>
             </td>
+            <td class="secondary-text" :title="connection.in_use && connection.used_by ? `run ${connection.used_by.run_id}` : undefined">{{ usageLabel(connection) }}</td>
             <td class="secondary-text">{{ new Date(connection.updated_at).toLocaleString() }}</td>
             <td>
               <div class="project-head-actions">
                 <button v-if="connection.has_cred" class="control" type="button" @click="() => void reveal(connection)">{{ revealedId === connection.connection_id ? 'Hide' : 'Reveal' }}</button>
-                <button class="control" type="button" @click="() => startEdit(connection)">Edit</button>
-                <button class="control" type="button" @click="() => void remove(connection)">Remove</button>
+                <button class="control" type="button" :disabled="connection.in_use" :title="connection.in_use ? 'In use by an agent' : undefined" @click="() => startEdit(connection)">Edit</button>
+                <button class="control" type="button" :disabled="connection.in_use" :title="connection.in_use ? 'In use by an agent' : undefined" @click="() => void remove(connection)">Remove</button>
               </div>
             </td>
           </tr>

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent_runtime import AgentRunner
+from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, handle_connection_tool, masked_connections
 from .artifacts import ArtifactStore
 from .models import AgentRole, AgentStatus
 from .pipeline_profiles import PipelineProfile
@@ -29,6 +30,7 @@ class PipelineController:
 
     TOOL_NAMES = (
         "read_profile", "get_status", "read_agent_output", "run_agent", "finish_pipeline",
+        *CONNECTION_TOOL_NAMES,
     )
 
     def __init__(
@@ -48,6 +50,10 @@ class PipelineController:
         self.finish_requested = False
         self.fatal_error: str | None = None
         self.fatal = asyncio.Event()
+        self.root_invocation_id: int | None = None
+
+    def bind_root_invocation(self, invocation_id: int) -> None:
+        self.root_invocation_id = invocation_id
 
     @classmethod
     def tool_definitions(cls) -> list[dict[str, Any]]:
@@ -72,6 +78,7 @@ class PipelineController:
                 "required": ["id", "input_data"],
             }},
             {"name": "finish_pipeline", "description": "Mark the fully completed pipeline.", "parameters": no_args},
+            *CONNECTION_TOOL_DEFINITIONS,
         ]
 
     @staticmethod
@@ -108,6 +115,14 @@ class PipelineController:
             return self._error("arguments must be an object")
         if name in {"read_profile", "get_status", "finish_pipeline"} and arguments:
             return self._error("this tool takes no arguments")
+        if name in CONNECTION_TOOL_NAMES:
+            if self.root_invocation_id is None:
+                return self._error("root orchestrator is not registered yet")
+            return await handle_connection_tool(
+                self.owner.state, name, arguments,
+                caller=f"root orchestrator (run {self.run_id})",
+                invocation_id=self.root_invocation_id,
+            )
         if name == "read_profile":
             return self.profile.to_dict()
         if name == "get_status":
@@ -214,7 +229,8 @@ class Orchestrator:
     def dry_run_plan(self, project_id: str, profile: PipelineProfile) -> dict[str, Any]:
         root_config = self.runner.role_configs[AgentRole.ROOT]
         agents = [{"id": AgentRole.ROOT.value, "name": "Root orchestrator",
-                   "model_selector": profile.root_model or root_config.model_selector}]
+                   "model_selector": profile.root_model or root_config.model_selector,
+                   "thinking": profile.root_thinking or root_config.thinking}]
         agents.extend(
             {"id": step.id, "name": step.name, "model_selector": step.model_selector,
              "depends_on": list(step.depends_on)}
@@ -254,7 +270,10 @@ class Orchestrator:
         root_task: asyncio.Task[Any] | None = None
         watchdog: asyncio.Task[None] | None = None
         try:
-            context = project_context(target, initial_prompt, str(project_directory))
+            context = project_context(
+                target, initial_prompt, str(project_directory),
+                connections=masked_connections(self.state),
+            )
             controller = PipelineController(self, profile, run_id, context, report)
             root_session: list[Any] = [None]
             root_task = asyncio.create_task(
@@ -265,7 +284,9 @@ class Orchestrator:
                     worker_count=len(profile.steps),
                     root_prompt=profile.root_prompt,
                     model_selector=profile.root_model or None,
+                    thinking=profile.root_thinking or None,
                     on_session=lambda s: root_session.__setitem__(0, s),
+                    on_invocation_started=controller.bind_root_invocation,
                 ),
                 name=f"pipeline-root-{run_id}",
             )

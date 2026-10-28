@@ -116,6 +116,7 @@ const formatTime = (value: string | null) => (value ? new Date(value).toLocaleSt
             <div v-else class="dock-details">
               <div><strong>Invocation</strong><span class="mono">#{{ invocation.invocation_id }}</span></div>
               <div><strong>Model</strong><span>{{ invocation.model_selector || 'default model' }}</span></div>
+              <div><strong>Effort</strong><span>{{ invocation.thinking }}</span></div>
               <div><strong>Started</strong><span>{{ formatTime(invocation.started_at) }}</span></div>
               <div><strong>Finished</strong><span>{{ formatTime(invocation.finished_at) }}</span></div>
               <div><strong>Return code</strong><span>{{ invocation.returncode ?? '—' }}</span></div>

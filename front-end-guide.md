@@ -92,7 +92,8 @@ system mode follows `prefers-color-scheme` live.
 ### Typography
 
 - Sans: Google Sans Flex (variable, loaded from Google Fonts) with Inter/system UI fallback.
-- Mono: project/run/invocation IDs, folders, logs, JSON, prompts previews.
+- Mono: Google Sans Code (Google Fonts, same stylesheet link) with SFMono/Consolas
+  fallback; used for project/run/invocation IDs, folders, logs, JSON, prompts previews.
 - Consistent type scale; metadata smaller than primary content.
 
 ### Components
@@ -158,25 +159,43 @@ Inspired by the React Flow AI Workflow Editor layout, built with Vue Flow:
 - **Left palette**: a single **Agent** node type — click to add, or drag onto the canvas
   (drop position projected with Vue Flow `project`). No other node categories exist.
 - **Center canvas**: dotted background, zoom/pan, Controls, MiniMap, custom agent nodes +
-  fixed root node, animated selection states.
+  fixed root node, animated selection states. Every node has four edge handles
+  (top/right/bottom/left, `ConnectionMode.Loose`); a dependency can be dragged between any
+  two handles, and each edge anchors to whichever sides face the connected nodes
+  (`anchorSides` in `lib/profileGraph.ts`: horizontal when |dx| ≥ |dy|, else vertical),
+  re-evaluated live while dragging. The run/preview graph (`AgentGraph`) uses the same
+  dynamic anchors.
 - **Right inspector (~340px)**: selected agent name, model (from `GET /api/omp-models`,
-  with previously saved but unavailable selectors kept visible as unavailable), prompt;
-  root selection edits the supplemental root prompt; edge selection offers dependency
-  removal.
+  with previously saved but unavailable selectors kept visible as unavailable), effort
+  (`THINKING_LEVELS` in `lib/types.ts`, default `medium`), prompt;
+  root selection edits the orchestrator model, effort (server default or a level) and the
+  supplemental root prompt; edge selection offers dependency
+  removal. New agents default to the first available model; agents added while the model
+  list is still loading are backfilled once it resolves, and Save runs the client-side
+  draft validation first so a missing model blocks with a listed problem instead of a
+  backend 400.
 
 Rules preserved from the backend contract:
 
 - Root is fixed, unconnectable and undeletable; root edges are derived automatically for
   nodes with no dependencies.
-- Node IDs are stable `node_<32hex>`; max 64 nodes; names/models nonempty; prompts
-  ≤10,000 chars; positions finite within ±10,000; no self/duplicate/cycle dependencies —
-  rejected connections show the reason.
+- Node IDs are stable `node_<32hex>`; max 64 nodes; names/models nonempty; effort is one of
+  the omp thinking levels; prompts ≤10,000 chars; positions finite within ±10,000; no
+  self/duplicate/cycle dependencies — rejected connections show the reason.
 - Explicit save only (`PUT` with revision). A 409 conflict keeps the local draft and
   offers reload/discard; it never overwrites silently. Local undo/redo (bounded history)
   covers structural and text edits; dirty navigation warns.
 
+Edges render at 2px (3px + accent when selected), with arrowheads pointing from prerequisite
+to dependent in both the editor and run graph. Drag an agent handle onto another agent's
+handle to create a directed dependency. Drag either endpoint of an existing dependency
+edge to reconnect it; a valid drop is one undoable edit. Invalid, duplicate, cyclic, or
+empty-canvas drops preserve the original edge. Automatic root edges cannot be reconnected.
+Every dependency edge carries mid-edge buttons — **+** inserts an agent into the connection,
+**×** removes it (root edges have no ×: they are derived, not user-owned).
 Keyboard: Ctrl/Cmd+S save (outside text fields), Delete removes graph selection when the
-canvas has focus, Escape clears selection. Never fight native text-field editing.
+canvas has focus, Escape clears selection; edge selection also offers removal in the
+inspector. Never fight native text-field editing.
 
 ## 8. Run Workspace (`/projects/:projectId/agents`)
 
@@ -188,7 +207,11 @@ canvas has focus, Escape clears selection. Never fight native text-field editing
   edges while running, Controls + MiniMap, node drag persistence per project
   (override > profile position > deterministic grid).
 - Details dock (collapsible) for the selected node with tabs:
-  - **Conversation** — parsed stdout conversation (existing conversation renderer).
+  - **Conversation** — parsed stdout conversation. Agent replies render as Markdown
+    (`AgentMarkdown.vue` → `lib/markdown.ts`, markdown-it with `html: false`, images
+    disabled, unsafe `javascript:`/`data:` links dropped); streamed partial text re-renders
+    on every page. JSON-object replies keep the `StructuredValue` view; prompts, tool
+    input/results and raw JSONL stay verbatim preformatted text.
   - **Diagnostics** — raw stderr.
   - **Details** — invocation timestamps, model, return code, error, artifact references.
 - Guidance composer for running agents only (`chat_available`), 4000-char limit.

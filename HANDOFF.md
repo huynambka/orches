@@ -19,18 +19,23 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
   (`orches/omp.py` — `OmpClient` / `OmpRpcSession`).
 - **Frontend**: Nuxt 4 + Vue 3 + TypeScript in `web/`, plain CSS design tokens
   (`web/app/assets/css/main.css`), Vue Flow (`@vue-flow/core` + background/controls/minimap).
-  Font: Google Sans Flex (Google Fonts link in `nuxt.config.ts`). No React/Tailwind/shadcn.
+  Fonts: Google Sans Flex (sans) + Google Sans Code (mono), one Google Fonts link in
+  `nuxt.config.ts`. No React/Tailwind/shadcn.
 - **Storage**: repo-root `.orches/state.sqlite3` (projects/runs/invocations/artifacts/
   connections), `~/.orches/profiles.sqlite3` (reusable profiles), run artifacts inside each
   project folder under `.orches/runs/<run_id>`.
 
 ## Domain model & API (local-only, `/api/*`)
 
-- **Profile** (`orches/pipeline_profiles.py`): `{id, name, steps[], root_prompt?, root_model?}`;
-  step = `{id: node_<32hex>, name, model_selector, prompt, depends_on[], position}`.
+- **Profile** (`orches/pipeline_profiles.py`): `{id, name, steps[], root_prompt?, root_model?, root_thinking?}`;
+  step = `{id: node_<32hex>, name, model_selector, prompt, depends_on[], position, thinking}`.
+  `thinking` is the omp `--thinking` level for that agent's session
+  (`off|minimal|low|medium|high|xhigh|max|auto`, default `medium`; optional on input so
+  older saved profiles load). Recorded on the invocation and shown in the run Details tab.
   Limits: ≤64 nodes, names ≤160, prompts ≤10000, selectors ≤256, positions ±10000, DAG only.
   Revisioned optimistic save: `PUT /api/pipeline-profiles/{id}` with `revision` → 409 on stale.
-  `root_model` (empty = `[roles.root]` default from `orches.toml`) picks the orchestrator model.
+  `root_model` (empty = `[roles.root]` default from `orches.toml`) picks the orchestrator model;
+  `root_thinking` (same levels as step `thinking`, empty = `[roles.root] thinking`) its effort.
 - **Project**: name + existing bound folder (marker `.orches/project.json`), objective
   (`target`), `initial_prompt`, selected profile. Start gates: saved draft, objective,
   profile with ≥1 agent, no active run. One current run per project (old terminal runs pruned).
@@ -40,8 +45,18 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
   **Cancel**: `POST /api/runs/{run_id}/cancel` (202) cancels the API-owned run task →
   run `failed` / error `run cancelled`; 404 unknown, 409 not running / not managed by this
   API process (e.g. CLI runs).
-- **Connections**: informational address book (name/os/ip/cred); cred masked everywhere,
-  explicit reveal route only.
+- **Connections**: address book (name/os/ip/cred); cred masked in all API list/mutation
+  responses, explicit reveal route only. Agents access it via host tools: root + workers
+  get `read_connections`/`claim_connection`/`release_connection`/`reveal_connection`
+  (`orches/connection_tools.py`); masked list is embedded in run context (`project_context`);
+  workers need the per-run `worker-approvals.yml` `--config` overlay because host tools
+  default to exec tier and `write` mode would deny them. **Exclusive claims**: a
+  `connection_claims` row (SQLite, `orches/state.py`) binds a connection to one running
+  `agent_invocations.id`; claim/reveal/release require the live owner (root binds via
+  `on_invocation_started` → `PipelineController.bind_root_invocation`); competing agents get
+  clean `_is_error` denials; claims auto-release in the same transaction as terminal
+  invocation/run updates and `fail_interrupted_api_runs()`; claimed records reject
+  PATCH/DELETE with 409; `in_use`/`used_by` exposed in API + Connections page Usage column.
 - **Models**: `GET /api/omp-models` shells out to `omp models --json` (chat models only).
 
 ## Key behaviors / fixes landed (don't regress)

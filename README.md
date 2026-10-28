@@ -72,9 +72,16 @@ orches run show <run_id> --json
 ## Connections
 
 The **Connections** tab is an address book of machines you work with: name, OS, IP and an optional
-credential. It is informational only — Orches never uses those records to execute anything.
-Credentials are stored in plaintext in the local SQLite database and are returned only by the
-explicit local-only reveal route.
+credential. Pipeline agents can use it through host tools: the root and every worker get
+`read_connections` (masked list with live usage, also included in the run context),
+`claim_connection` / `release_connection` (register exclusive use of one connection for the
+calling agent), and `reveal_connection` (returns the stored credential, only to the agent that
+claimed it). A claim is exclusive: while one agent is using a connection, other agents cannot
+claim or reveal it, and the UI blocks editing or removing it (409). Claims end when the owner
+releases them or automatically when the owning agent invocation or its run ends — including
+cancellation and API-restart recovery. Orches itself never connects to those machines.
+Credentials are stored in plaintext in the local SQLite database and are returned by the agent
+reveal tool and the explicit local-only reveal route.
 
 ## Storage
 

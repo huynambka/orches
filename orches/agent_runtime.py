@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore
+from .connection_tools import CONNECTION_TOOL_APPROVALS_YML, CONNECTION_TOOL_DEFINITIONS, handle_connection_tool
 from .models import AgentInvocation, AgentRole, AgentResult, AgentStatus, RoleConfig, utc_now
 from .omp import HostToolHandler, OmpClient, OmpRpcSession
 from .project_files import session_root
@@ -82,8 +83,11 @@ class AgentRunner:
         """Run a profile worker node and preserve its plain text output."""
         node_id = step.id
         # Headless workers cannot answer approval prompts; grant file writes inside the
-        # bound project and enough time for build-style tasks.
-        config = RoleConfig(model_selector=step.model_selector, approval_mode="write", timeout_seconds=600)
+        # bound project and enough time for build-style tasks. Effort comes from the node.
+        config = RoleConfig(
+            model_selector=step.model_selector, thinking=step.thinking,
+            approval_mode="write", timeout_seconds=600,
+        )
         started = utc_now()
         started_clock = time.monotonic()
         invocation_id = self.state.start_invocation(
@@ -124,6 +128,18 @@ class AgentRunner:
             else:
                 stdout_path = raw_dir / f"{node_id}.stdout.jsonl"
                 stdout_path.parent.mkdir(parents=True, exist_ok=True)
+                caller = f"worker {step.name!r} ({node_id}, run {run_id})"
+
+                async def connection_tools(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+                    return await handle_connection_tool(
+                        self.state, name, arguments, caller=caller, invocation_id=invocation_id,
+                    )
+
+                approvals = self.runs_root / run_id / "worker-approvals.yml"
+                if not approvals.exists():
+                    approvals.parent.mkdir(parents=True, exist_ok=True)
+                    approvals.write_text(CONNECTION_TOOL_APPROVALS_YML, encoding="utf-8")
+
                 session = await self.omp.start_session(
                     prompt, append_system_prompt=worker_system_prompt(step.prompt),
                     cwd=workspace, project_directory=context.get("project_directory"),
@@ -131,6 +147,9 @@ class AgentRunner:
                     timeout=config.timeout_seconds, approval_mode=config.approval_mode,
                     max_output_bytes=self.max_output_bytes, stdout_path=stdout_path,
                     tools=list(WORKER_TOOLS),
+                    host_tools=CONNECTION_TOOL_DEFINITIONS,
+                    host_tool_handler=connection_tools,
+                    extra_args=["--config", str(approvals)],
                 )
                 if self.sessions is not None:
                     await self.sessions.publish(run_id, invocation_id, session)
@@ -183,12 +202,16 @@ class AgentRunner:
         worker_count: int,
         root_prompt: str = "",
         model_selector: str | None = None,
+        thinking: str | None = None,
         on_session: Callable[[OmpRpcSession], None] | None = None,
+        on_invocation_started: Callable[[int], None] | None = None,
     ) -> AgentResult:
         role = AgentRole.ROOT
         config = self.role_configs[role]
         if model_selector:
             config = replace(config, model_selector=model_selector)
+        if thinking:
+            config = replace(config, thinking=thinking)
         started_clock = time.monotonic()
         invocation_id = self.state.start_invocation(
             AgentInvocation(
@@ -201,6 +224,8 @@ class AgentRunner:
                 prompt_version=config.prompt_version,
             )
         )
+        if on_invocation_started is not None:
+            on_invocation_started(invocation_id)
         status = AgentStatus.FAILED
         error: str | None = None
         returncode: int | None = None

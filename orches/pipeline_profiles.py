@@ -10,6 +10,9 @@ from typing import Any, Mapping
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _NODE_ID = re.compile(r"^node_[0-9a-f]{32}$")
 MAX_NODES = 64
+# omp --thinking levels; "medium" matches RoleConfig's default for workers.
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
+DEFAULT_THINKING = "medium"
 
 
 def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> str:
@@ -20,6 +23,12 @@ def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> st
         raise ValueError(f"{label} must be nonempty")
     if len(value) > maximum:
         raise ValueError(f"{label} must be at most {maximum} characters")
+    return value
+
+
+def _thinking(value: Any) -> str:
+    if not isinstance(value, str) or value not in THINKING_LEVELS:
+        raise ValueError(f"thinking must be one of {', '.join(THINKING_LEVELS)}")
     return value
 
 
@@ -54,6 +63,7 @@ class PipelineStep:
     prompt: str = ""
     depends_on: tuple[str, ...] = ()
     position: tuple[float, float] = (0.0, 0.0)
+    thinking: str = DEFAULT_THINKING
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +73,7 @@ class PipelineStep:
             "prompt": self.prompt,
             "depends_on": list(self.depends_on),
             "position": _position_dict(self.position),
+            "thinking": self.thinking,
         }
 
 
@@ -72,8 +83,9 @@ class PipelineProfile:
     name: str
     steps: tuple[PipelineStep, ...] = ()
     root_prompt: str = ""
-    # Empty means "use [roles.root] model_selector from orches.toml".
+    # Empty means "use [roles.root] model_selector / thinking from orches.toml".
     root_model: str = ""
+    root_thinking: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -85,6 +97,8 @@ class PipelineProfile:
             result["root_prompt"] = self.root_prompt
         if self.root_model:
             result["root_model"] = self.root_model
+        if self.root_thinking:
+            result["root_thinking"] = self.root_thinking
         return result
 
     def step(self, node_id: str) -> PipelineStep:
@@ -103,6 +117,8 @@ def _validate(profile: PipelineProfile) -> PipelineProfile:
     _text(profile.name, "profile name", 160, required=True)
     _text(profile.root_prompt, "root_prompt", 10000)
     _text(profile.root_model, "root_model", 256)
+    if profile.root_thinking:
+        _thinking(profile.root_thinking)
     if len(profile.steps) > MAX_NODES:
         raise ValueError(f"profiles may contain at most {MAX_NODES} nodes")
     ids = [step.id for step in profile.steps]
@@ -117,6 +133,7 @@ def _validate(profile: PipelineProfile) -> PipelineProfile:
         _text(step.model_selector, "model_selector", 256, required=True)
         _text(step.prompt, "prompt", 10000)
         _position(step.position)
+        _thinking(step.thinking)
         dependencies[step.id] = set(step.depends_on)
         if len(step.depends_on) != len(set(step.depends_on)):
             raise ValueError(f"node {step.id!r} contains duplicate dependencies")
@@ -146,7 +163,7 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
     if not isinstance(raw, Mapping):
         raise ValueError("pipeline profile must be an object")
     allowed = {"id", "name", "steps"}
-    optional = {"root_prompt", "root_model"}
+    optional = {"root_prompt", "root_model", "root_thinking"}
     if not allowed <= set(raw) or set(raw) - (allowed | optional) or not isinstance(raw["steps"], list):
         raise ValueError("pipeline profile must contain id, name and steps")
     profile_id = raw["id"]
@@ -154,10 +171,15 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
         raise ValueError("pipeline profile id must be a string")
     root_prompt = _text(raw.get("root_prompt", ""), "root_prompt", 10000)
     root_model = _text(raw.get("root_model", ""), "root_model", 256)
+    root_thinking = raw.get("root_thinking", "")
+    if root_thinking != "":
+        root_thinking = _thinking(root_thinking)
     steps: list[PipelineStep] = []
     for index, item in enumerate(raw["steps"]):
         required = {"id", "name", "model_selector", "prompt", "depends_on", "position"}
-        if not isinstance(item, Mapping) or set(item) != required or not isinstance(item["depends_on"], list):
+        optional = {"thinking"}
+        if (not isinstance(item, Mapping) or not required <= set(item) or set(item) - (required | optional)
+                or not isinstance(item["depends_on"], list)):
             raise ValueError(f"pipeline profile step {index} has invalid fields")
         if not all(isinstance(value, str) for value in item["depends_on"]):
             raise ValueError(f"pipeline profile step {index} dependencies must be strings")
@@ -170,9 +192,10 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
             _text(item["prompt"], "prompt", 10000),
             tuple(item["depends_on"]),
             _position(item["position"]),
+            _thinking(item.get("thinking", DEFAULT_THINKING)),
         ))
     return _validate(PipelineProfile(profile_id, _text(raw["name"], "profile name", 160, required=True),
-                                     tuple(steps), root_prompt, root_model))
+                                     tuple(steps), root_prompt, root_model, root_thinking))
 
 
 def profile_from_record(raw: Mapping[str, Any]) -> PipelineProfile:
