@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.orches/
 .cve-forge/
 runs/
 *.sqlite3
@@ -9,4 +10,8 @@ runs/
 *.key
 .env
 .env.*
-.cve-forge/runs/*/mcp/
+
+# web client (Nuxt)
+web/node_modules/
+web/.nuxt/
+web/.output/

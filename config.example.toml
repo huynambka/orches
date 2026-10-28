@@ -1,0 +1,17 @@
+[runtime]
+state_db = ".orches/state.sqlite3"
+runs_root = ".orches/runs"
+# profiles_db defaults to ~/.orches/profiles.sqlite3
+max_prompt_bytes = 300000
+max_output_bytes = 64000000
+
+[omp]
+binary = "omp"
+
+# The root orchestrator is the only configurable role; worker models and prompts
+# are defined per node inside a pipeline profile in the Profiles tab.
+[roles.root]
+model_selector = ""
+thinking = "high"
+timeout_seconds = 3600
+approval_mode = "yolo"
