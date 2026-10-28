@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { cancelRun, deleteProject, getPipelineProfiles, getProject, startProjectRun, updateProject } from '~/lib/api';
+import { cancelRun, deleteProject, getPipelineProfiles, getProject, getRun, resumeRun, startProjectRun, updateProject } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
-import type { PipelineProfile, ProjectChanges, ProjectDetail } from '~/lib/types';
+import { hasDrift, profileDrift } from '~/lib/profileDiff';
+import type { AgentId, PipelineProfile, ProjectChanges, ProjectDetail, RunDetail } from '~/lib/types';
 
 const initialDraft = (project: ProjectDetail): ProjectChanges => ({
   name: project.name, target: project.target, initial_prompt: project.initial_prompt,
@@ -11,6 +12,7 @@ const initialDraft = (project: ProjectDetail): ProjectChanges => ({
 
 const projectId = useRoute().params.projectId as string;
 const project = ref<ProjectDetail | null>(null);
+const run = ref<RunDetail | null>(null);
 const draft = ref<ProjectChanges | null>(null);
 const dirty = ref(false);
 const profiles = ref<PipelineProfile[]>([]);
@@ -20,10 +22,13 @@ const loading = ref(true);
 const saving = ref(false);
 const starting = ref(false);
 const deleting = ref(false);
+const stopping = ref(false);
+const resuming = ref(false);
 
 const load = async () => {
   try {
     const [current, configured] = await Promise.all([getProject(projectId), getPipelineProfiles()]);
+    run.value = current.current_run ? await getRun(current.current_run.run_id) : null;
     project.value = current;
     profiles.value = configured.profiles;
     if (!dirty.value) draft.value = initialDraft(current);
@@ -38,10 +43,11 @@ const load = async () => {
 let timer: number | undefined;
 onMounted(() => {
   void load();
-  timer = window.setInterval(() => void load(), 5000);
+  timer = window.setInterval(() => void load(), 2000);
 });
 onUnmounted(() => { if (timer !== undefined) window.clearInterval(timer); });
 
+/* ------------------------------------------------------------ settings */
 const change = (next: ProjectChanges) => {
   dirty.value = true;
   draft.value = { ...draft.value, ...next };
@@ -87,13 +93,22 @@ const remove = async () => {
   }
 };
 
+const selectedProfile = computed(() => profiles.value.find((profile) => profile.id === draft.value?.pipeline_profile));
+const running = computed(() => run.value?.run.status === 'running');
+const runDisabledReason = computed(() => !draft.value?.pipeline_profile ? 'Select a pipeline profile first.'
+  : !selectedProfile.value ? 'Selected pipeline profile is unavailable; choose another profile.'
+    : selectedProfile.value.steps.length === 0 ? 'Add at least one agent to this profile before starting.'
+      : !draft.value?.target?.trim() ? 'Set an objective first.'
+        : dirty.value ? 'Save changes before starting.' : running.value ? 'A run is already active.' : '');
+
+/* ---------------------------------------------------------------- runs */
 const start = async () => {
   if (starting.value || saving.value || dirty.value) return;
   starting.value = true;
   actionError.value = '';
   try {
     await startProjectRun(projectId);
-    navigateTo(`/projects/${encodeURIComponent(projectId)}/agents`);
+    await load();
   } catch (caught) {
     actionError.value = caught instanceof Error ? caught.message : 'Unable to start the pipeline';
     void load();
@@ -102,14 +117,12 @@ const start = async () => {
   }
 };
 
-const stopping = ref(false);
-
 const stopRun = async () => {
-  const current = project.value?.current_run;
-  if (!current || current.status !== 'running' || stopping.value) return;
+  const current = run.value;
+  if (!current || current.run.status !== 'running' || stopping.value) return;
   const accepted = await confirmDialog.value?.ask({
     title: 'Stop run',
-    message: 'Stop the active pipeline run? Running agents are terminated and the run is marked failed.',
+    message: 'Stop this pipeline run? Running agents are terminated and the run is marked failed. Files already written stay in the project folder.',
     confirmLabel: 'Stop run',
     danger: true,
   });
@@ -117,7 +130,7 @@ const stopRun = async () => {
   stopping.value = true;
   actionError.value = '';
   try {
-    await cancelRun(current.run_id);
+    await cancelRun(current.run.run_id);
     await load();
   } catch (caught) {
     actionError.value = caught instanceof Error ? caught.message : 'Unable to stop the run';
@@ -126,39 +139,219 @@ const stopRun = async () => {
   }
 };
 
-const selectedProfile = computed(() => profiles.value.find((profile) => profile.id === draft.value?.pipeline_profile));
-const running = computed(() => project.value?.current_run?.status === 'running');
-const runDisabledReason = computed(() => !draft.value?.pipeline_profile ? 'Select a pipeline profile first.'
-  : !selectedProfile.value ? 'Selected pipeline profile is unavailable; choose another profile.'
-    : selectedProfile.value.steps.length === 0 ? 'Add at least one agent to this profile before starting.'
-      : !draft.value?.target?.trim() ? 'Set an objective first.'
-        : dirty.value ? 'Save changes before starting.' : running.value ? 'A run is already active.' : '');
+const canResume = computed(() => {
+  const current = run.value;
+  return Boolean(current && current.run.status !== 'running' && current.pipeline_profile);
+});
+
+/** Difference between what this run executed and what the project has saved now. */
+const drift = computed(() => {
+  const snapshot = run.value?.pipeline_profile;
+  const saved = project.value?.pipeline_profile_definition;
+  if (!snapshot || !saved) return null;
+  const result = profileDrift(snapshot, saved);
+  return hasDrift(result) ? result : null;
+});
+const driftSummary = computed(() => {
+  const current = drift.value;
+  if (!current) return [];
+  const parts: string[] = [];
+  if (current.differentProfile) parts.push(`profile is now “${project.value?.pipeline_profile_definition?.name}”`);
+  if (current.root) parts.push(`orchestrator model ${current.root.from || 'default'} → ${current.root.to || 'default'}`);
+  for (const step of current.changed) {
+    parts.push(step.fields.includes('model') ? `${step.name}: ${step.from} → ${step.to}` : `${step.name}: ${step.fields.join(', ')} changed`);
+  }
+  if (current.added.length) parts.push(`${current.added.length} agent${current.added.length === 1 ? '' : 's'} added`);
+  if (current.removed.length) parts.push(`${current.removed.length} agent${current.removed.length === 1 ? '' : 's'} removed`);
+  return parts;
+});
+
+/** New run of the project's saved profile. `rerun` forces one agent (and its dependents) to execute again. */
+const resume = async (rerun: string[] = []) => {
+  const current = run.value;
+  if (!current || !canResume.value || resuming.value) return;
+  const edited = new Set(drift.value?.changed.map((step) => step.id) ?? []);
+  const completed = current.agents.filter((agent) => agent.role !== 'root' && agent.status === 'completed' && !edited.has(agent.role)).map((agent) => agent.role);
+  const target = rerun[0];
+  const changeNote = drift.value
+    ? drift.value.differentProfile
+      ? ' The project now selects a different profile, so every agent runs with it.'
+      : ` The saved profile changed since this run${edited.size ? `; ${edited.size} edited agent${edited.size === 1 ? '' : 's'} and their dependents run again with it` : ' and is used for this run'}.`
+    : '';
+  const accepted = await confirmDialog.value?.ask({
+    title: target ? 'Rerun from this agent' : 'Resume run',
+    message: target
+      ? `Start a new run that reruns this agent and everything that depends on it. Other completed agents keep their previous output. The finished run is replaced.${changeNote}`
+      : `Start a new run with the saved profile. ${completed.length} completed agent${completed.length === 1 ? '' : 's'} keep their output; failed, edited and unstarted agents run again. The finished run is replaced.${changeNote}`,
+    confirmLabel: target ? 'Rerun from here' : 'Resume run',
+  });
+  if (!accepted) return;
+  resuming.value = true;
+  actionError.value = '';
+  try {
+    await resumeRun(current.run.run_id, rerun);
+    await load();
+  } catch (caught) {
+    actionError.value = caught instanceof Error ? caught.message : 'Unable to resume the run';
+  } finally {
+    resuming.value = false;
+  }
+};
+
+/* ------------------------------------------------------------- preview */
+const encode = (id: string) => encodeURIComponent(id);
+const previewProfile = computed(() => project.value?.pipeline_profile_definition ?? null);
+/**
+ * A finished run of a different profile is history, not the pipeline this project
+ * runs next: show the saved profile instead (its nodes are what layout saves accept).
+ */
+const profileReplaced = computed(() =>
+  Boolean(run.value && run.value.run.status !== 'running' && drift.value?.differentProfile));
+
+/* Preview details appear only for the clicked node; nothing is selected until then. */
+const previewSelected = ref<AgentId | null>(null);
+watch(() => previewProfile.value?.id, () => { previewSelected.value = null; });
+const previewStep = computed(() =>
+  previewSelected.value && previewSelected.value !== 'root'
+    ? previewProfile.value?.steps.find((step) => step.id === previewSelected.value) ?? null
+    : null);
+const previewStepName = (id: string) => previewProfile.value?.steps.find((step) => step.id === id)?.name || id;
+const previewDependencies = computed(() => {
+  const step = previewStep.value;
+  if (!step) return '';
+  return step.depends_on.length ? step.depends_on.map(previewStepName).join(', ') : 'Root orchestrator';
+});
 </script>
 
 <template>
   <main class="page-shell"><div class="page">
     <ConfirmDialog ref="confirmDialog" />
     <div class="page-path"><NuxtLink to="/">Projects</NuxtLink> / <b>{{ project?.name || projectId }}</b></div>
-    <div class="detail-head"><div><h1 class="detail-title">{{ project?.name || 'Project' }}</h1><span class="detail-id mono">{{ project?.project_id || projectId }}</span></div><div class="project-head-actions"><NuxtLink class="control" :to="`/projects/${encodeURIComponent(projectId)}/agents`">Manage agents</NuxtLink><button class="control" :disabled="loading || deleting" @click="() => void load()">{{ loading ? 'Refreshing…' : 'Refresh' }}</button><button class="control" type="button" :disabled="loading || saving || starting || deleting" @click="() => void remove()">{{ deleting ? 'Removing…' : 'Remove project' }}</button></div></div>
+    <div class="detail-head">
+      <div>
+        <h1 class="detail-title">{{ project?.name || 'Project' }}</h1>
+        <span class="detail-id mono">{{ run ? `Run ${run.run.run_id}` : project?.project_id || projectId }}</span>
+      </div>
+      <div class="project-head-actions">
+        <StatusBadge v-if="run" :status="run.run.status" />
+        <button
+          v-if="running"
+          class="control control-danger"
+          type="button"
+          :disabled="stopping"
+          @click="() => void stopRun()"
+        >{{ stopping ? 'Stopping…' : 'Stop run' }}</button>
+        <button
+          v-if="canResume"
+          class="control control-primary"
+          type="button"
+          :disabled="resuming"
+          title="New run with the saved profile; unchanged completed agents keep their output"
+          @click="() => void resume()"
+        >{{ resuming ? 'Resuming…' : 'Resume run' }}</button>
+        <button class="control" :disabled="loading || deleting" @click="() => void load()">{{ loading ? 'Refreshing…' : 'Refresh' }}</button>
+        <button class="control" type="button" :disabled="loading || saving || starting || deleting" @click="() => void remove()">{{ deleting ? 'Removing…' : 'Remove project' }}</button>
+      </div>
+    </div>
     <div v-if="error" class="error-state" role="alert"><span>{{ error }}</span><button class="control" @click="() => void load()">Retry</button></div>
     <div v-if="actionError" class="error-state" role="alert">{{ actionError }}</div>
     <div v-if="!project || !draft" class="panel empty-state"><strong>{{ loading ? 'Loading project…' : 'Project unavailable' }}</strong></div>
     <template v-else>
-      <section class="panel" aria-label="Project summary"><div class="detail-summary"><span><strong>Folder</strong>{{ project.project_directory }}</span><span><strong>Status</strong><StatusBadge v-if="project.current_run" :status="project.status"/><template v-else>Not started</template></span><span><strong>Updated</strong>{{ new Date(project.updated_at).toLocaleString() }}</span><ProgressBar :progress="project.progress" :has-run="Boolean(project.current_run)"/></div></section>
-      <section class="panel project-config" aria-label="Project configuration">
-        <div class="project-config-heading"><div><h2 class="page-heading">Project setup</h2><p class="inline-note">The root orchestrator runs the selected profile's agents in dependency order. Save settings before starting.</p></div></div>
-        <form class="project-form" @submit="(event) => void save(event)">
-          <label>Project name<input class="control" required :maxlength="160" :value="draft.name || ''" @input="(event) => change({ name: (event.target as HTMLInputElement).value })"/></label>
-          <label>Project folder<input class="control" readonly :value="project.project_directory" /></label>
-          <label>Objective<textarea class="control" :maxlength="2000" :rows="2" :value="draft.target || ''" @input="(event) => change({ target: (event.target as HTMLTextAreaElement).value })" placeholder="What this pipeline should accomplish in this folder"/></label>
-          <label>Initial brief for agents<textarea class="control" :maxlength="10000" :rows="4" :value="draft.initial_prompt || ''" @input="(event) => change({ initial_prompt: (event.target as HTMLTextAreaElement).value })" placeholder="Context and constraints; this is shared as structured data, not as instructions."/></label>
-          <div class="project-form-row">
-            <label>Pipeline profile<select class="control" :value="draft.pipeline_profile || ''" @change="(event) => change({ pipeline_profile: (event.target as HTMLSelectElement).value || null })"><option value="">No profile selected</option><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.steps.length === 0 ? ' (draft)' : '' }}</option></select></label>
+      <div v-if="run && !run.pipeline_profile" class="error-state" role="alert">No pipeline profile snapshot is available for this run.</div>
+      <div v-if="run && driftSummary.length" class="preview-banner" role="status">
+        <span>
+          <strong>Saved profile changed</strong> — {{ driftSummary.join('; ') }}.
+          {{ run.run.status === 'running' ? 'This run keeps the profile it started with; the next run uses the saved profile.' : profileReplaced ? 'The finished run is kept until the next run starts; Resume and Start run the saved profile shown below.' : 'Models shown below are what this run used. Resume uses the saved profile; edited agents run again.' }}
+        </span>
+        <NuxtLink v-if="project.pipeline_profile" class="control" :to="`/profiles?edit=${encode(project.pipeline_profile)}`">Open profile</NuxtLink>
+      </div>
+      <div class="project-layout">
+        <div class="project-stage">
+          <!-- Active or finished run: real execution data only. -->
+          <AgentWorkspace
+            v-if="run && run.pipeline_profile && !profileReplaced"
+            :key="`${run.run.run_id}-${run.pipeline_profile.id}`"
+            :project-id="project.project_id"
+            :run-id="run.run.run_id"
+            :detail="run"
+            :layout="project.agent_layout"
+            @refresh="load"
+            @rerun="(role) => void resume([role])"
+          />
+          <!-- No run yet: a labeled preview of the selected profile, never an invented execution. -->
+          <template v-else-if="!run || profileReplaced">
+            <template v-if="previewProfile">
+              <div class="preview-banner" role="status">
+                <span><strong>Preview</strong> — {{ run ? 'this profile has not run in this project yet' : 'this project has not run yet' }}. Showing the selected profile “{{ previewProfile.name }}”.</span>
+                <NuxtLink class="control" :to="`/profiles?edit=${encode(previewProfile.id)}`">Edit profile</NuxtLink>
+              </div>
+              <section class="agent-workspace" aria-label="Profile preview">
+                <AgentGraph
+                  :key="`preview-${previewProfile.id}`"
+                  :project-id="project.project_id"
+                  :steps="previewProfile.steps"
+                  :layout="project.agent_layout"
+                  :selected="previewSelected"
+                  @select="(role) => { previewSelected = role; }"
+                />
+                <div class="workflow-panel">
+                  <div v-if="!previewSelected" class="empty-state">
+                    <strong>No node selected</strong>
+                    <span>Select a node to view its saved configuration.</span>
+                  </div>
+                  <template v-else-if="previewSelected === 'root'">
+                    <div class="workflow-panel-heading">
+                      <h3>Root orchestrator</h3>
+                    </div>
+                    <div class="panel dock-details">
+                      <div><strong>Model</strong><span>{{ previewProfile.root_model || 'Server default' }}</span></div>
+                      <div><strong>Effort</strong><span>{{ previewProfile.root_thinking || 'Server default' }}</span></div>
+                      <div><strong>Prompt</strong><span v-if="previewProfile.root_prompt" class="preview-prompt">{{ previewProfile.root_prompt }}</span><span v-else>—</span></div>
+                    </div>
+                  </template>
+                  <template v-else-if="previewStep">
+                    <div class="workflow-panel-heading">
+                      <h3>{{ previewStep.name }}</h3>
+                    </div>
+                    <div class="panel dock-details">
+                      <div><strong>Model</strong><span>{{ previewStep.model_selector || '—' }}</span></div>
+                      <div><strong>Effort</strong><span>{{ previewStep.thinking }}</span></div>
+                      <div><strong>Depends on</strong><span>{{ previewDependencies }}</span></div>
+                      <div><strong>Prompt</strong><span v-if="previewStep.prompt" class="preview-prompt">{{ previewStep.prompt }}</span><span v-else>—</span></div>
+                      <div><strong>Id</strong><span class="mono">{{ previewStep.id }}</span></div>
+                    </div>
+                  </template>
+                </div>
+              </section>
+            </template>
+            <div v-else class="panel empty-state">
+              <strong>No pipeline profile selected</strong>
+              <span>Select a profile in the setup panel to preview and run its agents.</span>
+            </div>
+          </template>
+        </div>
+        <aside class="panel project-config project-setup" aria-label="Project configuration">
+          <div class="project-config-heading"><div><h2 class="page-heading">Project setup</h2><p class="inline-note">The root orchestrator runs the selected profile's agents in dependency order. Save settings before starting.</p></div></div>
+          <div class="project-setup-summary">
+            <span><strong>Status</strong><StatusBadge v-if="project.current_run" :status="project.status" /><template v-else>Not started</template></span>
+            <span><strong>Updated</strong>{{ new Date(project.updated_at).toLocaleString() }}</span>
+            <ProgressBar :progress="project.progress" :has-run="Boolean(project.current_run)" />
           </div>
-          <p v-if="!profiles.length" class="inline-note">No profiles yet. Create one in the <NuxtLink to="/profiles">Profiles</NuxtLink> tab.</p>
-          <div class="project-form-actions"><button class="control" type="submit" :disabled="saving || starting || !dirty">{{ saving ? 'Saving…' : 'Save settings' }}</button><button class="control control-primary" type="button" :disabled="starting || saving || Boolean(runDisabledReason)" @click="() => void start()">{{ starting ? 'Starting…' : 'Start pipeline →' }}</button><button v-if="running" class="control control-danger" type="button" :disabled="stopping" @click="() => void stopRun()">{{ stopping ? 'Stopping…' : 'Stop run' }}</button><span v-if="runDisabledReason" class="inline-note" role="status">{{ runDisabledReason }}</span></div>
-        </form>
-      </section>
+          <form class="project-form" @submit="(event) => void save(event)">
+            <label>Project name<input class="control" required :maxlength="160" :value="draft.name || ''" @input="(event) => change({ name: (event.target as HTMLInputElement).value })"></label>
+            <label>Project folder<input class="control" readonly :value="project.project_directory"></label>
+            <label>Objective<textarea class="control" :maxlength="2000" :rows="2" :value="draft.target || ''" placeholder="What this pipeline should accomplish in this folder" @input="(event) => change({ target: (event.target as HTMLTextAreaElement).value })" /></label>
+            <label>Initial brief for agents<textarea class="control" :maxlength="10000" :rows="5" :value="draft.initial_prompt || ''" placeholder="Context and constraints; this is shared as structured data, not as instructions." @input="(event) => change({ initial_prompt: (event.target as HTMLTextAreaElement).value })" /></label>
+            <label>Pipeline profile<select class="control" :value="draft.pipeline_profile || ''" @change="(event) => change({ pipeline_profile: (event.target as HTMLSelectElement).value || null })"><option value="">No profile selected</option><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.steps.length === 0 ? ' (draft)' : '' }}</option></select></label>
+            <p v-if="!profiles.length" class="inline-note">No profiles yet. Create one in the <NuxtLink to="/profiles">Profiles</NuxtLink> tab.</p>
+            <div class="project-form-actions">
+              <button class="control" type="submit" :disabled="saving || starting || !dirty">{{ saving ? 'Saving…' : 'Save settings' }}</button>
+              <button class="control control-primary" type="button" :disabled="starting || saving || Boolean(runDisabledReason)" @click="() => void start()">{{ starting ? 'Starting…' : 'Start pipeline →' }}</button>
+              <span v-if="runDisabledReason" class="inline-note" role="status">{{ runDisabledReason }}</span>
+            </div>
+          </form>
+        </aside>
+      </div>
     </template>
   </div></main>
 </template>

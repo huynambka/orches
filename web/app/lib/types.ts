@@ -103,6 +103,28 @@ export interface AgentInvocation {
   chat_available: boolean;
   /** Completed in an earlier run and carried into this one by Resume. */
   reused: boolean;
+  /** Model requests recorded for this invocation; null until one completes (always null when reused). */
+  usage: CostUsage | null;
+}
+
+/** Aggregated model requests. Token sums and `cost_usd` are null when OMP reported none. */
+export interface CostUsage {
+  requests: number;
+  /** Requests OMP reported without a price; the known `cost_usd` is then a partial total. */
+  unpriced_requests: number;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  total_tokens: number | null;
+}
+
+/** Lifetime usage of one resolved model (`provider/model`) inside one project. */
+export interface CostRow extends CostUsage {
+  project_id: string;
+  project_name: string;
+  model: string;
 }
 
 export interface Artifact {

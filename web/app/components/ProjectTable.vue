@@ -31,7 +31,7 @@ const formatDate = (value: string) => new Date(value).toLocaleString();
           </td>
           <td><ProgressBar :progress="project.progress" :has-run="Boolean(project.current_run)" /></td>
           <td>
-            <NuxtLink v-if="project.current_run" class="mono" :to="`/projects/${encode(project.project_id)}/agents`">{{ project.current_run.run_id.slice(0, 12) }}…</NuxtLink>
+            <NuxtLink v-if="project.current_run" class="mono" :to="`/projects/${encode(project.project_id)}`">{{ project.current_run.run_id.slice(0, 12) }}…</NuxtLink>
             <span v-else class="secondary-text">—</span>
           </td>
           <td class="secondary-text">{{ formatDate(project.updated_at) }}</td>

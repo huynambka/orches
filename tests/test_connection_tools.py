@@ -189,7 +189,7 @@ class ConnectionToolsTest(unittest.IsolatedAsyncioTestCase):
         profile = PipelineProfile(
             id="p", name="P", steps=(PipelineStep(id="node_" + "c" * 32, name="C", model_selector="m"),),
         )
-        controller = PipelineController(owner, profile, run_id, {}, {"stages": {}})
+        controller = PipelineController(owner, profile, run_id, {}, {"stages": {}}, None)  # type: ignore[arg-type]
         self.assertTrue(
             {d["name"] for d in controller.tool_definitions()} >= set(CONNECTION_TOOL_NAMES),
         )

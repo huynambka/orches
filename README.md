@@ -34,15 +34,22 @@ The client is available at `http://localhost:3000`.
 1. **Profiles** — create a profile, add agent nodes, drag them, connect dependencies, and select a
    node to set its name, model and prompt. The model list comes from `omp models --json`; if OMP
    cannot provide that catalog, the editor reports the error instead of inventing models.
-2. **Projects** — create a project with a name and an existing local folder, write the objective and
-   initial brief, and select a profile. Settings must be saved before a run starts.
-3. **Manage agents** — the run graph shows the root orchestrator plus every profile node, live status,
-   logs and chat. Node drags are saved per project through `PATCH /api/projects/{project_id}/agent-layout`.
+2. **Projects** — create a project with a name and an existing local folder. The project page shows
+   the pipeline graph next to a **Project setup** sidebar: write the objective and initial brief,
+   select a profile, save, then start. The graph shows the root orchestrator plus every profile node;
+   clicking a node reveals its live status, logs and chat. Node drags are saved per project through
+   `PATCH /api/projects/{project_id}/agent-layout`.
 
 Each run snapshots the selected profile, so later profile edits never change a run already in flight
 or its history. A run contains one root invocation plus one invocation per configured node; the root
 may run independent ready nodes concurrently, but a node cannot be duplicated or started before its
 dependencies complete. Running projects cannot be edited or started twice.
+
+While a run is active, every worker can ask the root orchestrator a question through a
+host-managed inbox (`send_agent_message` / `read_agent_messages` / `reply_agent_message`) — no
+profile prompt needed, the worker system prompt explains it — and the root can ask a running
+worker. Workers do not talk to each other. Messages are asynchronous and scoped to the run; a
+finished agent can no longer be addressed.
 
 Worker nodes run headless with file tools only (`read`, `write`, `edit`, `glob`, `grep`, `todo`,
 `web_search`); shell/exec tools are not available to them. If any worker fails, the pipeline can no
@@ -51,8 +58,12 @@ root a short grace window to wrap up, then aborts it, and the run ends `blocked`
 error instead of idling until the root timeout.
 
 A finished run (`completed`, `failed` or `blocked`) can be **resumed**: the Manage agents page offers
-**Resume run**, which starts a new run from the same profile snapshot and carries over every worker
-that completed (its output, logs and status), so only failed and unstarted workers execute again.
+**Resume run**, which starts a new run of the project's **currently saved profile** (exactly what
+**Start pipeline** would use) and carries over every worker that completed (its output, logs and
+status) whose model, prompt, effort and dependencies are unchanged since that run, so only failed,
+edited and unstarted workers execute again. A run always shows the models it actually used; when
+the saved profile differs from that, the Manage agents page shows a "Saved profile changed" banner
+listing the differences (a running run keeps the profile it started with).
 Selecting a worker and choosing **Rerun from here** carries over everything except that worker and
 its dependents. Carried-over workers show "reused from previous run"; the root reads their saved
 output and cannot start them again. The previous run is replaced, as with any new run.
@@ -89,6 +100,19 @@ releases them or automatically when the owning agent invocation or its run ends 
 cancellation and API-restart recovery. Orches itself never connects to those machines.
 Credentials are stored in plaintext in the local SQLite database and are returned by the agent
 reveal tool and the explicit local-only reveal route.
+
+## Costs
+
+The **Costs** tab shows model spend per project and per model (`GET /api/costs`). Every
+completed assistant message and cache-warming request that `omp` reports over RPC is recorded
+as one row in the project-owned `model_cost_events` ledger, keyed by the resolved
+`provider/model` the request actually used (the configured selector is the fallback). The
+ledger keeps the token counts and the USD amount `omp` reports — its catalog estimate or the
+server-reported cost — and never prices tokens itself. Rows survive run pruning and Resume
+(reused workers add nothing) and are deleted with their project. Tracking starts with this
+version; earlier runs are not imported. A request `omp` reports without a price is counted as
+*unpriced* and the affected totals are marked partial, so a `—` means unknown, not free. The
+run workspace Details tab shows the same figures for the selected agent's current run.
 
 ## Storage
 

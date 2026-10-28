@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { sendAgentMessage } from '~/lib/api';
+import { formatTokens, formatUsd } from '~/lib/costs';
 import type { AgentId, AgentLayout, AgentStatus, RunDetail } from '~/lib/types';
 
 const props = defineProps<{ projectId: string; runId: string; detail: RunDetail; layout: AgentLayout }>();
@@ -26,8 +27,12 @@ const statuses = computed(() => {
   return result;
 });
 
-const selected = ref<AgentId>('root');
-const invocation = computed(() => invocationFor(selected.value));
+// Nothing is selected until the user clicks a node; the panel then shows only that node.
+const selected = ref<AgentId | null>(null);
+const invocation = computed(() => (selected.value ? invocationFor(selected.value) : undefined));
+watch(steps, (value) => {
+  if (selected.value && selected.value !== 'root' && !value.some((step) => step.id === selected.value)) selected.value = null;
+});
 const artifactsFor = computed(() => {
   const current = invocation.value;
   if (!current) return [];
@@ -65,6 +70,21 @@ const submit = async () => {
 };
 
 const formatTime = (value: string | null) => (value ? new Date(value).toLocaleString() : '—');
+
+/** Current-run model usage of the selected invocation; lifetime project totals live on /costs. */
+const usageSummary = computed(() => {
+  const current = invocation.value;
+  if (!current) return null;
+  if (current.reused) return { note: 'No new model usage (reused)' };
+  const usage = current.usage;
+  if (!usage) return { note: 'No usage reported yet' };
+  const partial = usage.unpriced_requests > 0 && usage.cost_usd !== null ? ' (partial)' : '';
+  return {
+    cost: `${formatUsd(usage.cost_usd)}${partial}`,
+    requests: `${usage.requests}${usage.unpriced_requests ? ` · ${usage.unpriced_requests} unpriced` : ''}`,
+    tokens: `in ${formatTokens(usage.input_tokens)} · out ${formatTokens(usage.output_tokens)} · cache read ${formatTokens(usage.cache_read_tokens)} · cache write ${formatTokens(usage.cache_write_tokens)}`,
+  };
+});
 </script>
 
 <template>
@@ -79,89 +99,103 @@ const formatTime = (value: string | null) => (value ? new Date(value).toLocaleSt
       @select="(role) => { selected = role; }"
     />
     <div class="workflow-panel" aria-live="polite">
-      <div class="workflow-panel-heading">
-        <div>
-          <h3>{{ labelFor(selected) }}</h3>
-          <span class="inline-note">{{ invocation ? `${invocation.model_selector || 'default model'} · ${invocation.status}${invocation.reused ? ' · reused from previous run' : ''}` : 'Invocation pending' }}</span>
-        </div>
-        <span class="project-head-actions">
-          <StatusBadge v-if="invocation" :status="invocation.status" />
-          <button
-            v-if="invocation && runFinished && selected !== 'root'"
-            class="control"
-            type="button"
-            title="Start a new run that keeps other completed agents and reruns this one and everything after it"
-            @click="emit('rerun', selected)"
-          >Rerun from here</button>
-          <button class="control" type="button" :aria-expanded="dockOpen" @click="dockOpen = !dockOpen">{{ dockOpen ? 'Hide details' : 'Show details' }}</button>
-        </span>
-      </div>
-      <div v-if="!invocation" class="empty-state">
-        <strong>Pending</strong>
-        <span>This node has not started yet. Select an active node while the pipeline runs.</span>
+      <div v-if="!selected" class="empty-state">
+        <strong>No node selected</strong>
+        <span>Select a node to view its run details.</span>
       </div>
       <template v-else>
-        <section v-if="dockOpen" class="panel" aria-label="Agent details">
-          <div class="dock-tabs" role="tablist" aria-label="Agent detail view">
-            <button :class="`dock-tab ${dockTab === 'conversation' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'conversation'" @click="dockTab = 'conversation'">Conversation</button>
-            <button :class="`dock-tab ${dockTab === 'diagnostics' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'diagnostics'" @click="dockTab = 'diagnostics'">Diagnostics</button>
-            <button :class="`dock-tab ${dockTab === 'details' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'details'" @click="dockTab = 'details'">Details</button>
+        <div class="workflow-panel-heading">
+          <div>
+            <h3>{{ labelFor(selected) }}</h3>
+            <span class="inline-note">{{ invocation ? `${invocation.model_selector || 'default model'} · ${invocation.status}${invocation.reused ? ' · reused from previous run' : ''}` : 'Invocation pending' }}</span>
           </div>
-          <div class="dock-body">
-            <AgentLogStream
-              v-if="dockTab === 'conversation'"
-              :key="`out-${runId}-${invocation.invocation_id}`"
-              :run-id="runId"
-              :agent="invocation"
-              stream="stdout"
-            />
-            <AgentLogStream
-              v-else-if="dockTab === 'diagnostics'"
-              :key="`err-${runId}-${invocation.invocation_id}`"
-              :run-id="runId"
-              :agent="invocation"
-              stream="stderr"
-            />
-            <div v-else class="dock-details">
-              <div><strong>Invocation</strong><span class="mono">#{{ invocation.invocation_id }}</span></div>
-              <div><strong>Model</strong><span>{{ invocation.model_selector || 'default model' }}</span></div>
-              <div><strong>Effort</strong><span>{{ invocation.thinking }}</span></div>
-              <div><strong>Started</strong><span>{{ formatTime(invocation.started_at) }}</span></div>
-              <div><strong>Finished</strong><span>{{ formatTime(invocation.finished_at) }}</span></div>
-              <div><strong>Return code</strong><span>{{ invocation.returncode ?? '—' }}</span></div>
-              <div v-if="invocation.error"><strong>Error</strong><span class="inline-error">{{ invocation.error }}</span></div>
-              <div><strong>Artifacts</strong><span v-if="artifactsFor.length" class="mono">{{ artifactsFor.map((artifact) => artifact.relative_path).join(', ') }}</span><span v-else>—</span></div>
-              <strong>Run stages</strong>
-              <ul class="stage-list">
-                <li v-for="stage in stageRows" :key="stage.invocation_id" class="stage-row">
-                  <StatusBadge :status="stage.status" />
-                  <span>{{ labelFor(stage.role) }}</span>
-                  <span class="mono">{{ formatTime(stage.started_at) }}</span>
-                </li>
-              </ul>
+          <span class="project-head-actions">
+            <StatusBadge v-if="invocation" :status="invocation.status" />
+            <button
+              v-if="invocation && runFinished && selected !== 'root'"
+              class="control"
+              type="button"
+              title="Start a new run that keeps other completed agents and reruns this one and everything after it"
+              @click="emit('rerun', selected)"
+            >Rerun from here</button>
+            <button class="control" type="button" :aria-expanded="dockOpen" @click="dockOpen = !dockOpen">{{ dockOpen ? 'Hide details' : 'Show details' }}</button>
+          </span>
+        </div>
+        <div v-if="!invocation" class="empty-state">
+          <strong>Pending</strong>
+          <span>This node has not started yet. Select an active node while the pipeline runs.</span>
+        </div>
+        <template v-else>
+          <section v-if="dockOpen" class="panel" aria-label="Agent details">
+            <div class="dock-tabs" role="tablist" aria-label="Agent detail view">
+              <button :class="`dock-tab ${dockTab === 'conversation' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'conversation'" @click="dockTab = 'conversation'">Conversation</button>
+              <button :class="`dock-tab ${dockTab === 'diagnostics' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'diagnostics'" @click="dockTab = 'diagnostics'">Diagnostics</button>
+              <button :class="`dock-tab ${dockTab === 'details' ? 'active' : ''}`" role="tab" :aria-selected="dockTab === 'details'" @click="dockTab = 'details'">Details</button>
             </div>
-          </div>
-        </section>
-        <form class="agent-chat" @submit.prevent="submit">
-          <label for="agent-message">
-            <strong>{{ selected === 'root' ? 'Guide orchestrator' : 'Guide this active agent' }}</strong>
-            <span class="inline-note">Messages are supplemental guidance and do not bypass profile dependencies or safety checks.</span>
-          </label>
-          <textarea
-            id="agent-message"
-            class="control"
-            :maxlength="4000"
-            :value="draft"
-            :disabled="!invocation.chat_available || sending"
-            :placeholder="invocation.chat_available ? 'Add focused guidance' : 'Chat is unavailable after this agent finishes'"
-            @input="draft = ($event.target as HTMLTextAreaElement).value"
-          />
-          <div class="agent-chat-actions">
-            <span class="inline-note">{{ draft.length }}/4000</span>
-            <button class="control control-primary" type="submit" :disabled="!invocation.chat_available || sending || !draft.trim()">{{ sending ? 'Sending…' : 'Send guidance' }}</button>
-          </div>
-          <span v-if="message" class="inline-note" role="status">{{ message }}</span>
-        </form>
+            <div class="dock-body">
+              <AgentLogStream
+                v-if="dockTab === 'conversation'"
+                :key="`out-${runId}-${invocation.invocation_id}`"
+                :run-id="runId"
+                :agent="invocation"
+                stream="stdout"
+              />
+              <AgentLogStream
+                v-else-if="dockTab === 'diagnostics'"
+                :key="`err-${runId}-${invocation.invocation_id}`"
+                :run-id="runId"
+                :agent="invocation"
+                stream="stderr"
+              />
+              <div v-else class="dock-details">
+                <div><strong>Invocation</strong><span class="mono">#{{ invocation.invocation_id }}</span></div>
+                <div><strong>Model</strong><span>{{ invocation.model_selector || 'default model' }}</span></div>
+                <div><strong>Effort</strong><span>{{ invocation.thinking }}</span></div>
+                <div><strong>Started</strong><span>{{ formatTime(invocation.started_at) }}</span></div>
+                <div><strong>Finished</strong><span>{{ formatTime(invocation.finished_at) }}</span></div>
+                <div><strong>Return code</strong><span>{{ invocation.returncode ?? '—' }}</span></div>
+                <div v-if="invocation.error"><strong>Error</strong><span class="inline-error">{{ invocation.error }}</span></div>
+                <div><strong>Artifacts</strong><span v-if="artifactsFor.length" class="mono">{{ artifactsFor.map((artifact) => artifact.relative_path).join(', ') }}</span><span v-else>—</span></div>
+                <template v-if="usageSummary">
+                  <div v-if="'note' in usageSummary"><strong>Model usage</strong><span>{{ usageSummary.note }}</span></div>
+                  <template v-else>
+                    <div><strong>Cost (USD)</strong><span class="mono">{{ usageSummary.cost }}</span></div>
+                    <div><strong>Model requests</strong><span>{{ usageSummary.requests }}</span></div>
+                    <div><strong>Tokens</strong><span class="mono">{{ usageSummary.tokens }}</span></div>
+                  </template>
+                </template>
+                <strong>Run stages</strong>
+                <ul class="stage-list">
+                  <li v-for="stage in stageRows" :key="stage.invocation_id" class="stage-row">
+                    <StatusBadge :status="stage.status" />
+                    <span>{{ labelFor(stage.role) }}</span>
+                    <span class="mono">{{ formatTime(stage.started_at) }}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </section>
+          <form class="agent-chat" @submit.prevent="submit">
+            <label for="agent-message">
+              <strong>{{ selected === 'root' ? 'Guide orchestrator' : 'Guide this active agent' }}</strong>
+              <span class="inline-note">Messages are supplemental guidance and do not bypass profile dependencies or safety checks.</span>
+            </label>
+            <textarea
+              id="agent-message"
+              class="control"
+              :maxlength="4000"
+              :value="draft"
+              :disabled="!invocation.chat_available || sending"
+              :placeholder="invocation.chat_available ? 'Add focused guidance' : 'Chat is unavailable after this agent finishes'"
+              @input="draft = ($event.target as HTMLTextAreaElement).value"
+            />
+            <div class="agent-chat-actions">
+              <span class="inline-note">{{ draft.length }}/4000</span>
+              <button class="control control-primary" type="submit" :disabled="!invocation.chat_available || sending || !draft.trim()">{{ sending ? 'Sending…' : 'Send guidance' }}</button>
+            </div>
+            <span v-if="message" class="inline-note" role="status">{{ message }}</span>
+          </form>
+        </template>
       </template>
     </div>
   </section>

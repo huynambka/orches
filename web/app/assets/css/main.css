@@ -341,6 +341,9 @@ textarea.control { height: auto; min-height: 78px; resize: vertical; padding: 9p
 }
 .detail-summary span strong { color: var(--fg); font-weight: 650; margin-right: 5px; }
 .detail-summary .progress-wrap { min-width: 150px; }
+.cost-caption { margin: 0; padding: 0 18px 14px; }
+.cost-model-row td { background: var(--surface-2); border-top: 0; }
+.cost-model-name { padding-left: 32px; }
 .project-config { padding: 19px 20px; }
 .project-config-heading { margin-bottom: 16px; }
 .project-form { display: grid; gap: 15px; }
@@ -349,6 +352,16 @@ textarea.control { height: auto; min-height: 78px; resize: vertical; padding: 9p
 .project-form-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(240px, 2fr); gap: 12px; }
 .project-form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .project-form-actions .inline-note { max-width: 580px; }
+.project-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; min-width: 0; }
+.project-stage { min-width: 0; display: grid; gap: 12px; }
+.project-setup { position: sticky; top: calc(var(--topbar-height) + 16px); }
+.project-setup-summary {
+  display: grid; gap: 6px; margin-bottom: 16px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+  color: var(--muted); font-size: 13px;
+}
+.project-setup-summary span { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-setup-summary span strong { color: var(--fg); font-weight: 650; }
 .project-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .page-shell-narrow { max-width: 1180px; }
 .profile-grid {
@@ -484,16 +497,18 @@ pre em { color: var(--faint); }
   background: var(--canvas-bg); overflow: hidden;
 }
 .workflow-node {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  display: grid; place-items: center; width: 64px; height: 64px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow); cursor: grab;
 }
 .vue-flow__node.dragging .workflow-node { cursor: grabbing; }
-.workflow-node strong { font-size: 13px; }
+.workflow-node .node-role-icon { width: 32px; height: 32px; }
+.workflow-node .node-role-icon svg { width: 22px; height: 22px; }
 .workflow-running { border-color: var(--info); background: var(--info-soft); }
 .workflow-completed { border-color: var(--success); }
 .workflow-failed, .workflow-blocked { border-color: var(--error); }
-.workflow-selected { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* Icon-only nodes: the ring is the only selection cue, so it must beat Vue Flow's `:focus { outline: none }`. */
+.vue-flow__node.workflow-selected, .vue-flow__node.workflow-selected:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
 .agent-workspace { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 16px; min-width: 0; }
 .workflow-panel { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .workflow-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -510,6 +525,7 @@ pre em { color: var(--faint); }
 .dock-body { min-height: 120px; }
 .dock-details { display: grid; gap: 8px; padding: 14px 16px; font-size: 13px; }
 .dock-details div { display: flex; gap: 8px; flex-wrap: wrap; }
+.dock-details .preview-prompt { white-space: pre-wrap; overflow-wrap: anywhere; flex: 1; min-width: 0; }
 .dock-details dt, .dock-details strong { color: var(--muted); font-weight: 600; min-width: 110px; }
 .stage-list { display: grid; gap: 6px; padding: 12px 16px; margin: 0; }
 .stage-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
@@ -554,17 +570,19 @@ pre em { color: var(--faint); }
 .editor-messages { padding: 8px 14px; display: grid; gap: 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .validation-list { margin: 0; padding-left: 18px; color: var(--error); font-size: 13px; display: grid; gap: 2px; }
 .profile-node {
-  display: flex; align-items: center; gap: 9px; min-width: 180px; padding: 12px 16px;
+  display: grid; place-items: center; width: 64px; height: 64px;
   border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
-  background: var(--surface); box-shadow: var(--shadow); font-size: 13px;
+  background: var(--surface); box-shadow: var(--shadow);
 }
 .profile-node-root { border-color: var(--accent); background: var(--accent-soft); }
-.profile-node-label { pointer-events: none; }
-.profile-node-icon {
+.profile-node .node-role-icon { width: 32px; height: 32px; }
+.profile-node .node-role-icon svg { width: 22px; height: 22px; }
+.node-role-icon {
   display: grid; place-items: center; width: 22px; height: 22px; flex: none;
   border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent);
+  pointer-events: none;
 }
-.profile-node-icon svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+.node-role-icon svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; }
 .profile-editor-canvas .vue-flow__handle, .editor-canvas .vue-flow__handle {
   width: 11px; height: 11px; border: 2px solid var(--surface); background: var(--accent);
 }
@@ -582,6 +600,10 @@ pre em { color: var(--faint); }
 .profile-edge-actions { justify-items: start; }
 
 /* ------------------------------------------------------- responsive */
+@media (max-width: 1400px) {
+  .project-layout { grid-template-columns: 1fr; }
+  .project-setup { position: static; }
+}
 @media (max-width: 1100px) {
   .search-field input { width: 210px; }
   .agent-workspace { grid-template-columns: 1fr; }

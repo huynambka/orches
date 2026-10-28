@@ -117,6 +117,8 @@ def _terminal_stop_reason(agent_end: dict[str, Any] | None) -> str | None:
 
 
 HostToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+UsageEventHandler = Callable[[dict[str, Any], int], None]
+_USAGE_EVENT_TYPES = frozenset({"message_end", "cache_warming_end"})
 
 
 class OmpRpcSession:
@@ -124,6 +126,7 @@ class OmpRpcSession:
         self, client: "OmpClient", proc: asyncio.subprocess.Process, *,
         stdout_path: str | Path | None, stderr_path: str | Path | None,
         max_output_bytes: int, timeout: int, host_tool_handler: HostToolHandler | None = None,
+        usage_event_handler: UsageEventHandler | None = None,
     ) -> None:
         self.client, self.proc = client, proc
         self.stdout_path, self.stderr_path = stdout_path, stderr_path
@@ -135,6 +138,8 @@ class OmpRpcSession:
         self._agent_end: dict[str, Any] | None = None; self._last_assistant = ""
         self._ready = asyncio.Event()
         self._host_tool_handler = host_tool_handler
+        self._usage_event_handler = usage_event_handler
+        self._event_index = 0
         self._host_tool_tasks: dict[str, asyncio.Task[None]] = {}
         self._host_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._host_responded: set[str] = set()
@@ -304,9 +309,17 @@ class OmpRpcSession:
                 public = _public_event(event)
                 if public is None: continue
                 self.events.append(public)
+                self._event_index += 1
                 if public.get("type") == "message_end":
                     message = public.get("message")
                     if isinstance(message, dict) and message.get("role") == "assistant": self._last_assistant = _extract_text(message.get("content"))
+                if public.get("type") in _USAGE_EVENT_TYPES and self._usage_event_handler is not None:
+                    # Billing is recorded as each request completes: a later timeout,
+                    # abort or pipe failure must not lose a charge already incurred.
+                    try:
+                        self._usage_event_handler(public, self._event_index)
+                    except Exception:
+                        log.exception("usage event %s #%s was not recorded", public.get("type"), public.get("messageId") or self._event_index)
                 if public.get("type") == "agent_end" and public.get("isTerminal", True) is not False:
                     self._agent_end = public; self._terminal.set()
                 await self._append(self.stdout_path, json.dumps(public, ensure_ascii=False) + "\n")
@@ -411,6 +424,7 @@ class OmpClient:
         stderr_path: str | Path | None = None, extra_args: list[str] | None = None,
         host_tools: list[dict[str, Any]] | None = None,
         host_tool_handler: HostToolHandler | None = None, no_builtin_tools: bool = False,
+        usage_event_handler: UsageEventHandler | None = None,
     ) -> OmpRpcSession:
         if "\x00" in prompt: raise ValueError("prompt contains NUL byte")
         if max_output_bytes <= 0: raise ValueError("max_output_bytes must be positive")
@@ -441,7 +455,7 @@ class OmpClient:
         session = OmpRpcSession(
             self, proc, stdout_path=stdout_path, stderr_path=stderr_path,
             max_output_bytes=max_output_bytes, timeout=timeout,
-            host_tool_handler=host_tool_handler,
+            host_tool_handler=host_tool_handler, usage_event_handler=usage_event_handler,
         )
         try:
             await asyncio.wait_for(self._wait_ready(session), timeout=min(30, timeout))

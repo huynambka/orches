@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .costs import model_key
 from .models import (
     AgentInvocation,
     AgentRole,
@@ -21,7 +22,7 @@ from .models import (
 
 _LOG = logging.getLogger("orches.state")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 LEGACY_APP_DIR = ".cve-forge"
 LEGACY_MARKER = "project.json"
 
@@ -48,6 +49,10 @@ class ArtifactConflictError(StateError):
 
 class ConnectionUseError(StateError):
     """A connection is claimed by a live agent or the caller does not own it."""
+
+
+class AgentMessageError(StateError):
+    """An agent message cannot be posted or read by the calling invocation."""
 
 
 class LegacyMigrationError(StateError):
@@ -128,6 +133,33 @@ CREATE TABLE IF NOT EXISTS run_pipeline_profiles (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
     profile_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    sender_invocation_id INTEGER NOT NULL REFERENCES agent_invocations(id) ON DELETE CASCADE,
+    recipient_invocation_id INTEGER NOT NULL REFERENCES agent_invocations(id) ON DELETE CASCADE,
+    reply_to INTEGER UNIQUE REFERENCES agent_messages(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_messages_recipient_idx ON agent_messages(recipient_invocation_id, id);
+CREATE TABLE IF NOT EXISTS model_cost_events (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    invocation_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    model_key TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY(invocation_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS model_cost_events_project_model_idx ON model_cost_events(project_id, model_key);
+CREATE INDEX IF NOT EXISTS model_cost_events_run_idx ON model_cost_events(run_id, invocation_id);
 CREATE TABLE IF NOT EXISTS legacy_cleanup (
     source_db TEXT PRIMARY KEY,
     manifest_json TEXT NOT NULL,
@@ -654,6 +686,164 @@ class StateStore:
                         item.get("stderr_artifact_id"), item.get("output_json"),
                     ),
                 )
+
+    # --------------------------------------------------------- agent messages
+    AGENT_MESSAGE_PAGE = 50
+
+    @staticmethod
+    def _live_invocation_row(conn: sqlite3.Connection, invocation_id: int) -> sqlite3.Row | None:
+        return conn.execute(
+            """SELECT ai.id, ai.run_id, ai.role FROM agent_invocations ai
+               JOIN runs r ON r.run_id = ai.run_id
+               WHERE ai.id=? AND ai.status='running' AND r.status='running'""",
+            (invocation_id,),
+        ).fetchone()
+
+    _AGENT_MESSAGE_SQL = """
+        SELECT m.id, m.reply_to, m.text, m.created_at,
+               s.role AS sender_role, t.role AS recipient_role
+        FROM agent_messages m
+        JOIN agent_invocations s ON s.id = m.sender_invocation_id
+        JOIN agent_invocations t ON t.id = m.recipient_invocation_id
+    """
+
+    @staticmethod
+    def _agent_message_record(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": int(row["id"]), "from": row["sender_role"], "to": row["recipient_role"],
+            "reply_to": int(row["reply_to"]) if row["reply_to"] is not None else None,
+            "text": row["text"], "created_at": row["created_at"],
+        }
+
+    def post_agent_message(
+        self, sender_id: int, recipient_role: str | None, text: str, *, reply_to: int | None = None,
+    ) -> dict[str, Any]:
+        """Deliver a question (to a role) or a reply (to the asker) between the root and a worker.
+
+        Questions name a recipient role; replies name only the question id and go back
+        to its author, so a reply can never be redirected or forged for another agent.
+        Workers talk only to the root: worker-to-worker messages are refused.
+        """
+        if (recipient_role is None) == (reply_to is None):
+            raise AgentMessageError("provide exactly one of recipient role or reply_to")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            sender = self._live_invocation_row(conn, sender_id)
+            if sender is None:
+                raise AgentMessageError("sending agent is not running")
+            if reply_to is not None:
+                question = conn.execute(
+                    "SELECT sender_invocation_id, recipient_invocation_id FROM agent_messages WHERE id=? AND run_id=?",
+                    (reply_to, sender["run_id"]),
+                ).fetchone()
+                if question is None or question["recipient_invocation_id"] != sender_id:
+                    raise AgentMessageError("reply_to does not name a message addressed to this agent")
+                if conn.execute("SELECT 1 FROM agent_messages WHERE reply_to=?", (reply_to,)).fetchone():
+                    raise AgentMessageError("that message was already answered")
+                recipient_id = int(question["sender_invocation_id"])
+                recipient = self._live_invocation_row(conn, recipient_id)
+                if recipient is None:
+                    raise AgentMessageError("the asking agent is no longer running")
+            else:
+                if AgentRole.ROOT.value not in (sender["role"], recipient_role):
+                    raise AgentMessageError("workers can only message the root orchestrator")
+                recipient = conn.execute(
+                    "SELECT id FROM agent_invocations WHERE run_id=? AND role=? AND status='running' ORDER BY id DESC LIMIT 1",
+                    (sender["run_id"], recipient_role),
+                ).fetchone()
+                if recipient is None:
+                    raise AgentMessageError(f"no running agent with id {recipient_role!r} in this run")
+                recipient_id = int(recipient["id"])
+                if recipient_id == sender_id:
+                    raise AgentMessageError("an agent cannot message itself")
+            cursor = conn.execute(
+                """INSERT INTO agent_messages(
+                    run_id,sender_invocation_id,recipient_invocation_id,reply_to,text,created_at
+                ) VALUES(?,?,?,?,?,?)""",
+                (sender["run_id"], sender_id, recipient_id, reply_to, text, utc_now()),
+            )
+            row = conn.execute(f"{self._AGENT_MESSAGE_SQL} WHERE m.id=?", (cursor.lastrowid,)).fetchone()
+            return self._agent_message_record(row)
+
+    def list_agent_messages(self, invocation_id: int, after_id: int) -> list[dict[str, Any]]:
+        """Incoming messages of a live agent with id > after_id, oldest first, one page."""
+        with self._connect() as conn:
+            if self._live_invocation_row(conn, invocation_id) is None:
+                raise AgentMessageError("reading agent is not running")
+            rows = conn.execute(
+                f"{self._AGENT_MESSAGE_SQL} WHERE m.recipient_invocation_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?",
+                (invocation_id, after_id, self.AGENT_MESSAGE_PAGE),
+            ).fetchall()
+        return [self._agent_message_record(row) for row in rows]
+
+    # ----------------------------------------------------------- model costs
+    _COST_AGGREGATE_SQL = """
+        COUNT(*) AS requests,
+        COUNT(*) - COUNT(cost_usd) AS unpriced_requests,
+        SUM(cost_usd) AS cost_usd,
+        SUM(input_tokens) AS input_tokens,
+        SUM(output_tokens) AS output_tokens,
+        SUM(cache_read_tokens) AS cache_read_tokens,
+        SUM(cache_write_tokens) AS cache_write_tokens,
+        SUM(total_tokens) AS total_tokens
+    """
+
+    def record_model_usage(self, invocation_id: int, record: dict[str, Any]) -> None:
+        """Append one billed model request to the project's lifetime ledger.
+
+        The ledger survives run pruning and resume clones; duplicate event keys for
+        the same invocation are ignored. The project is derived from the stored
+        invocation, never from the event.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT ai.run_id, ai.model_selector, r.project_id FROM agent_invocations ai
+                   JOIN runs r ON r.run_id = ai.run_id WHERE ai.id=?""",
+                (invocation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("invocation not found")
+            conn.execute(
+                """INSERT INTO model_cost_events(
+                    project_id,invocation_id,run_id,event_key,model_key,input_tokens,output_tokens,
+                    cache_read_tokens,cache_write_tokens,total_tokens,cost_usd,recorded_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(invocation_id,event_key) DO NOTHING""",
+                (
+                    row["project_id"], invocation_id, row["run_id"], record["event_key"],
+                    model_key(record.get("provider"), record.get("model"), row["model_selector"]),
+                    record.get("input_tokens"), record.get("output_tokens"),
+                    record.get("cache_read_tokens"), record.get("cache_write_tokens"),
+                    record.get("total_tokens"), record.get("cost_usd"), utc_now(),
+                ),
+            )
+
+    def list_model_costs(self) -> list[dict[str, Any]]:
+        """Lifetime usage per project and resolved model."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT e.project_id, p.name AS project_name, e.model_key AS model,
+                    {self._COST_AGGREGATE_SQL}
+                    FROM model_cost_events e JOIN projects p ON p.project_id = e.project_id
+                    GROUP BY e.project_id, e.model_key
+                    ORDER BY p.name ASC, e.project_id ASC, e.model_key ASC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def run_agent_costs(self, run_id: str) -> dict[int, dict[str, Any]]:
+        """Usage of each invocation that made model requests in this run."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT invocation_id, {self._COST_AGGREGATE_SQL}
+                    FROM model_cost_events WHERE run_id=? GROUP BY invocation_id""",
+                (run_id,),
+            ).fetchall()
+        result: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            result[int(item.pop("invocation_id"))] = item
+        return result
 
     # ------------------------------------------------------------------ runs
     def _set_project_after_run(self, conn: sqlite3.Connection, run_id: str, status: str) -> None:

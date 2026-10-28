@@ -52,7 +52,6 @@ const makeNode = (role: AgentId, index: number): Node => ({
   position: positionFor(role, index),
   data: { role, status: statusFor(role), label: labelFor(role) },
   class: nodeClass(role),
-  style: { width: '210px' },
 });
 
 const visibleRoles = computed<AgentId[]>(() => ['root', ...props.steps.map((step) => step.id)]);
@@ -151,7 +150,7 @@ const onNodeDragStop = ({ node }: { node: Node }) => {
           </template>
           <Background pattern-color="var(--canvas-dot)" :gap="18" />
           <Controls />
-          <MiniMap pannable zoomable />
+          <MiniMap pannable zoomable :width="120" :height="80" />
         </VueFlow>
       </ClientOnly>
     </div>

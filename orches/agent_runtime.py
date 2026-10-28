@@ -7,10 +7,12 @@ import json
 from dataclasses import replace
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from .artifacts import ArtifactStore
-from .connection_tools import CONNECTION_TOOL_APPROVALS_YML, CONNECTION_TOOL_DEFINITIONS, handle_connection_tool
+from .agent_messages import AGENT_MESSAGE_TOOL_NAMES, WORKER_MESSAGE_TOOL_DEFINITIONS
+from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, WORKER_HOST_TOOL_APPROVALS_YML, handle_connection_tool
+from .costs import parse_cost_event
 from .models import AgentInvocation, AgentRole, AgentResult, AgentStatus, RoleConfig, utc_now
 from .omp import HostToolHandler, OmpClient, OmpRpcSession
 from .project_files import session_root
@@ -54,6 +56,14 @@ class ActiveSessionRegistry:
             await session.record_user_steer(text)
 
 class AgentRunner:
+    def _usage_recorder(self, invocation_id: int) -> Callable[[dict[str, Any], int], None]:
+        """Persist each billed model request of an invocation as it completes."""
+        def record(event: dict[str, Any], index: int) -> None:
+            parsed = parse_cost_event(event, index)
+            if parsed is not None:
+                self.state.record_model_usage(invocation_id, parsed)
+        return record
+
     def __init__(
         self,
         omp: OmpClient | None,
@@ -79,8 +89,14 @@ class AgentRunner:
         step: Any,
         context: dict[str, Any],
         run_id: str,
+        *,
+        message_handler: Callable[[str, dict[str, Any], int], Awaitable[dict[str, Any]]] | None = None,
     ) -> AgentResult:
-        """Run a profile worker node and preserve its plain text output."""
+        """Run a profile worker node and preserve its plain text output.
+
+        `message_handler(name, arguments, invocation_id)` serves the agent message
+        tools as this worker; without it those tools are not advertised.
+        """
         node_id = step.id
         # Headless workers cannot answer approval prompts; grant file writes inside the
         # bound project and enough time for build-style tasks. Effort comes from the node.
@@ -130,15 +146,22 @@ class AgentRunner:
                 stdout_path.parent.mkdir(parents=True, exist_ok=True)
                 caller = f"worker {step.name!r} ({node_id}, run {run_id})"
 
-                async def connection_tools(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-                    return await handle_connection_tool(
-                        self.state, name, arguments, caller=caller, invocation_id=invocation_id,
-                    )
+                async def host_tools(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+                    if name in CONNECTION_TOOL_NAMES:
+                        return await handle_connection_tool(
+                            self.state, name, arguments, caller=caller, invocation_id=invocation_id,
+                        )
+                    if name in AGENT_MESSAGE_TOOL_NAMES and message_handler is not None:
+                        return await message_handler(name, arguments, invocation_id)
+                    return {"_is_error": True, "error": "unknown host tool"}
 
                 approvals = self.runs_root / run_id / "worker-approvals.yml"
                 if not approvals.exists():
                     approvals.parent.mkdir(parents=True, exist_ok=True)
-                    approvals.write_text(CONNECTION_TOOL_APPROVALS_YML, encoding="utf-8")
+                    approvals.write_text(WORKER_HOST_TOOL_APPROVALS_YML, encoding="utf-8")
+                advertised = list(CONNECTION_TOOL_DEFINITIONS)
+                if message_handler is not None:
+                    advertised += WORKER_MESSAGE_TOOL_DEFINITIONS
 
                 session = await self.omp.start_session(
                     prompt, append_system_prompt=worker_system_prompt(step.prompt),
@@ -147,9 +170,10 @@ class AgentRunner:
                     timeout=config.timeout_seconds, approval_mode=config.approval_mode,
                     max_output_bytes=self.max_output_bytes, stdout_path=stdout_path,
                     tools=list(WORKER_TOOLS),
-                    host_tools=CONNECTION_TOOL_DEFINITIONS,
-                    host_tool_handler=connection_tools,
+                    host_tools=advertised,
+                    host_tool_handler=host_tools,
                     extra_args=["--config", str(approvals)],
+                    usage_event_handler=self._usage_recorder(invocation_id),
                 )
                 if self.sessions is not None:
                     await self.sessions.publish(run_id, invocation_id, session)
@@ -277,6 +301,7 @@ class AgentRunner:
                     host_tools=host_tools,
                     host_tool_handler=host_tool_handler,
                     no_builtin_tools=True,
+                    usage_event_handler=self._usage_recorder(invocation_id),
                 )
                 if on_session is not None:
                     on_session(session)

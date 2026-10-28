@@ -1,5 +1,5 @@
 import type {
-  AgentId, AgentInvocation, AgentLayout, AgentPosition, Connection, ConnectionChanges, LogPage,
+  AgentId, AgentInvocation, AgentLayout, AgentPosition, Connection, ConnectionChanges, CostRow, LogPage,
   NewConnection, NewProject, PipelineProfile, ProjectChanges, ProjectDetail, ProjectSummary,
   RunDetail, StartedRun,
 } from './types';
@@ -30,6 +30,8 @@ const jsonMutation = (method: 'POST' | 'PUT' | 'PATCH', body: object): RequestIn
 
 export const getHealth = () => request<{ status: string }>('/health');
 export const getProjects = () => request<{ projects: ProjectSummary[] }>('/projects');
+/** Lifetime project × model usage rows; sum them client-side for project and model totals. */
+export const getCosts = () => request<{ rows: CostRow[] }>('/costs');
 export const getPipelineProfiles = () => request<{ profiles: PipelineProfile[] }>('/pipeline-profiles');
 export const createPipelineProfile = (name: string) =>
   request<PipelineProfile>('/pipeline-profiles', jsonMutation('POST', { name }));

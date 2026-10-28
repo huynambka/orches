@@ -17,8 +17,13 @@ def _profile() -> PipelineProfile:
     return PipelineProfile(id="p", name="P", steps=(step_a, step_b))
 
 
+class _RejectingMailbox:
+    async def handle(self, name: str, arguments: dict[str, Any], invocation_id: int) -> dict[str, Any]:
+        raise AssertionError(f"unexpected agent message tool {name}")
+
+
 class _FailingRunner:
-    async def run_agent(self, step: Any, context: dict[str, Any], run_id: str) -> AgentResult:
+    async def run_agent(self, step: Any, context: dict[str, Any], run_id: str, **_: Any) -> AgentResult:
         return AgentResult(
             run_id=run_id, role=step.id, status=AgentStatus.FAILED,
             output=None, raw_output="", stderr="", error="Tool call denied by user: bash",
@@ -38,12 +43,12 @@ class _Owner:
 class FatalControllerTest(unittest.IsolatedAsyncioTestCase):
     async def test_worker_failure_marks_fatal_and_blocks_everything(self) -> None:
         profile = _profile()
-        controller = PipelineController(_Owner(), profile, "run1", {}, {"stages": {}})
+        controller = PipelineController(_Owner(), profile, "run1", {}, {"stages": {}}, _RejectingMailbox())
         node_a, node_b = profile.steps[0].id, profile.steps[1].id
 
-        result = await controller.handle_tool("run_agent", {"id": node_a, "input_data": {}})
-        self.assertTrue(result.get("_is_error"))
-        self.assertIn("Tool call denied", result["error"])
+        started = await controller.handle_tool("run_agent", {"id": node_a, "input_data": {}})
+        self.assertEqual(started, {"id": node_a, "status": "running"})
+        await controller.tasks[node_a]
         self.assertTrue(controller.fatal.is_set())
         self.assertEqual(controller.statuses[node_a], "failed")
         self.assertIn("denied", controller.fatal_error)
@@ -91,7 +96,7 @@ class FatalWatchdogTest(unittest.IsolatedAsyncioTestCase):
         orch_mod.FATAL_ROOT_GRACE_SECONDS, orch_mod.FATAL_ABORT_GRACE_SECONDS = self._grace
 
     def _controller(self) -> PipelineController:
-        return PipelineController(_Owner(), _profile(), "run1", {}, {"stages": {}})
+        return PipelineController(_Owner(), _profile(), "run1", {}, {"stages": {}}, _RejectingMailbox())
 
     async def _root_task(self) -> tuple["asyncio.Future[Any]", asyncio.Task[Any]]:
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()

@@ -569,7 +569,7 @@ watch(edges, (value) => setEdges(value), { immediate: true });
           @click="() => addAgent()"
           @dragstart="onPaletteDragStart"
         >
-          <span class="profile-node-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c1.4-3.2 4-5 7-5s5.6 1.8 7 5" /></svg></span>
+          <NodeRoleIcon role="agent" />
           Agent
         </button>
         <span class="palette-hint">Click to add, or drag onto the canvas. Drag from one agent handle to another: the arrow points to the dependent agent. Drag either end of a dependency edge to reconnect it; anchors face the connected node automatically.</span>
@@ -656,7 +656,7 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             @input="rootPrompt = ($event.target as HTMLTextAreaElement).value"
           /></label>
         </div>
-        <span v-else-if="!selectedStep" class="inline-note">Select an agent to edit its name, model and prompt; select the root node for the orchestrator prompt; select a connection to remove it.</span>
+        <span v-else-if="!selectedStep" class="inline-note">Click a node icon to see its details: an agent to edit its name, model and prompt; the root node for the orchestrator prompt; a connection to remove it.</span>
         <template v-else>
           <div class="profile-node-panel-head">
             <h3>Agent</h3>

@@ -54,11 +54,11 @@ const crumbs = computed(() => {
   const path = route.path;
   if (path.startsWith('/profiles')) return [{ label: 'Profiles', to: '/profiles' }];
   if (path.startsWith('/connections')) return [{ label: 'Connections', to: '/connections' }];
+  if (path.startsWith('/costs')) return [{ label: 'Costs', to: '/costs' }];
   const result = [{ label: 'Projects', to: '/' }];
   const projectId = route.params.projectId;
   if (typeof projectId === 'string' && projectId) {
     result.push({ label: projectId, to: `/projects/${encodeURIComponent(projectId)}` });
-    if (path.endsWith('/agents')) result.push({ label: 'Agents', to: route.path });
   }
   return result;
 });

@@ -22,14 +22,17 @@ CONNECTION_TOOL_NAMES = (
 
 # Host tools default to the exec approval tier; workers run approval_mode="write",
 # which would deny them. This user-policy overlay (passed via --config) allows
-# exactly these tools without widening anything else.
-CONNECTION_TOOL_APPROVALS_YML = (
+# exactly the worker host tools without widening anything else.
+WORKER_HOST_TOOL_APPROVALS_YML = (
     "tools:\n"
     "  approval:\n"
     "    read_connections: allow\n"
     "    claim_connection: allow\n"
     "    release_connection: allow\n"
     "    reveal_connection: allow\n"
+    "    send_agent_message: allow\n"
+    "    reply_agent_message: allow\n"
+    "    read_agent_messages: allow\n"
 )
 _NO_ARGS = {"type": "object", "additionalProperties": False, "properties": {}}
 _ID_ONLY = {

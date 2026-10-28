@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .agent_messages import AGENT_MESSAGE_TOOL_NAMES, ROOT_MESSAGE_TOOL_DEFINITIONS, AgentMailbox
 from .agent_runtime import AgentRunner
 from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, handle_connection_tool, masked_connections
 from .artifacts import ArtifactStore
@@ -30,12 +31,12 @@ class PipelineController:
 
     TOOL_NAMES = (
         "read_profile", "get_status", "read_agent_output", "run_agent", "finish_pipeline",
-        *CONNECTION_TOOL_NAMES,
+        *CONNECTION_TOOL_NAMES, *AGENT_MESSAGE_TOOL_NAMES,
     )
 
     def __init__(
         self, owner: "Orchestrator", profile: PipelineProfile, run_id: str,
-        base_context: dict[str, Any], report: dict[str, Any],
+        base_context: dict[str, Any], report: dict[str, Any], mailbox: AgentMailbox,
         completed_outputs: Mapping[str, dict[str, Any]] | None = None,
     ) -> None:
         self.owner = owner
@@ -43,6 +44,7 @@ class PipelineController:
         self.run_id = run_id
         self.base_context = base_context
         self.report = report
+        self.mailbox = mailbox
         self.statuses = {step.id: "pending" for step in profile.steps}
         self.outputs: dict[str, dict[str, Any]] = {}
         self.results: dict[str, Any] = {}
@@ -80,7 +82,10 @@ class PipelineController:
                 "type": "object", "additionalProperties": False,
                 "properties": {"id": {"type": "string"}}, "required": ["id"],
             }},
-            {"name": "run_agent", "description": "Run one ready worker exactly once.", "parameters": {
+            {"name": "run_agent", "description": (
+                "Start one ready worker exactly once; returns immediately while it runs. "
+                "Poll get_status for completion and read_agent_output for its result."
+            ), "parameters": {
                 "type": "object", "additionalProperties": False,
                 "properties": {
                     "id": {"type": "string"},
@@ -94,6 +99,7 @@ class PipelineController:
             }},
             {"name": "finish_pipeline", "description": "Mark the fully completed pipeline.", "parameters": no_args},
             *CONNECTION_TOOL_DEFINITIONS,
+            *ROOT_MESSAGE_TOOL_DEFINITIONS,
         ]
 
     @staticmethod
@@ -130,9 +136,11 @@ class PipelineController:
             return self._error("arguments must be an object")
         if name in {"read_profile", "get_status", "finish_pipeline"} and arguments:
             return self._error("this tool takes no arguments")
-        if name in CONNECTION_TOOL_NAMES:
+        if name in CONNECTION_TOOL_NAMES or name in AGENT_MESSAGE_TOOL_NAMES:
             if self.root_invocation_id is None:
                 return self._error("root orchestrator is not registered yet")
+            if name in AGENT_MESSAGE_TOOL_NAMES:
+                return await self.mailbox.handle(name, arguments, self.root_invocation_id)
             return await handle_connection_tool(
                 self.owner.state, name, arguments,
                 caller=f"root orchestrator (run {self.run_id})",
@@ -197,17 +205,10 @@ class PipelineController:
             self.statuses[node_id] = "running"
             task = asyncio.create_task(self._execute(node_id, guidance), name=f"pipeline-{node_id}")
             self.tasks[node_id] = task
-        try:
-            return await task
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            async with self.lock:
-                self.statuses[node_id] = "failed"
-                self._mark_fatal(str(exc))
-            return self._error(f"{node_id} failed: {exc}")
+        return {"id": node_id, "status": "running"}
 
-    async def _execute(self, node_id: str, guidance: str) -> dict[str, Any]:
+    async def _execute(self, node_id: str, guidance: str) -> None:
+        """Run one worker to completion; records its outcome instead of raising."""
         step = self.profile.step(node_id)
         context = dict(self.base_context)
         context["root_guidance"] = guidance
@@ -215,17 +216,25 @@ class PipelineController:
             dependency: self.outputs[dependency]
             for dependency in step.depends_on
         }
-        result = await self.owner.runner.run_agent(step, context, self.run_id)
-        self.results[node_id] = result
-        self.report["stages"][node_id] = self.owner._result_summary(result)
-        if result.status != AgentStatus.COMPLETED or result.output is None:
-            raise PipelineError(result.error or f"{node_id} failed")
-        self.outputs[node_id] = result.output
-        self.statuses[node_id] = "completed"
-        return self._bounded({
-            "id": node_id, "status": "completed", "output": result.output,
-            "artifact_ids": list(result.artifact_ids),
-        })
+        try:
+            result = await self.owner.runner.run_agent(
+                step, context, self.run_id, message_handler=self.mailbox.handle,
+            )
+            self.results[node_id] = result
+            self.report["stages"][node_id] = self.owner._result_summary(result)
+            if result.status != AgentStatus.COMPLETED or result.output is None:
+                raise PipelineError(result.error or f"{node_id} failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            async with self.lock:
+                self.statuses[node_id] = "failed"
+                self._mark_fatal(str(exc))
+            self.report["stages"].setdefault(node_id, {"status": "failed", "error": str(exc)})
+            return
+        async with self.lock:
+            self.outputs[node_id] = result.output
+            self.statuses[node_id] = "completed"
 
     async def cancel(self) -> None:
         current = asyncio.current_task()
@@ -304,7 +313,8 @@ class Orchestrator:
                     "run_id": resumed_from,
                     "completed_workers": sorted(node_id for node_id in completed_outputs if node_id in {s.id for s in profile.steps}),
                 }
-            controller = PipelineController(self, profile, run_id, context, report, completed_outputs)
+            mailbox = AgentMailbox(self.state, self.artifacts, run_id)
+            controller = PipelineController(self, profile, run_id, context, report, mailbox, completed_outputs)
             root_session: list[Any] = [None]
             root_task = asyncio.create_task(
                 self.runner.run_root(

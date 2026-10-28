@@ -127,6 +127,24 @@ class PipelineProfile:
 
         return {step.id for step in self.steps if reusable(step.id)}
 
+    def unchanged_nodes(self, snapshot: "PipelineProfile") -> set[str]:
+        """Node ids whose execution-relevant definition matches ``snapshot``.
+
+        Name and position are presentation only; a different model, prompt,
+        effort or dependency set means a previous output no longer represents
+        this node.
+        """
+        previous = {step.id: step for step in snapshot.steps}
+        return {
+            step.id for step in self.steps
+            if step.id in previous and (
+                step.model_selector, step.prompt, step.thinking, set(step.depends_on),
+            ) == (
+                previous[step.id].model_selector, previous[step.id].prompt,
+                previous[step.id].thinking, set(previous[step.id].depends_on),
+            )
+        }
+
     def step(self, node_id: str) -> PipelineStep:
         return next(step for step in self.steps if step.id == node_id)
 

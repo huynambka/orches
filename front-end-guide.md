@@ -34,6 +34,8 @@ Real, supported feature areas:
   stdout conversation, stderr diagnostics, and guidance chat to running agents.
 - **Connections** — an informational address book (name, OS, IP, optional credential).
   Never executable infrastructure.
+- **Costs** — read-only model spend per project and per model, as reported by omp
+  (`GET /api/costs`); unknown prices are shown as unknown, never as zero.
 
 There is no authentication, no multi-workspace, no run cancellation, no execution history,
 no streaming API (polling only), and no node types beyond agent nodes. The UI must never
@@ -54,12 +56,12 @@ Do not add React, Next.js, @xyflow/react, Zustand, TanStack, or any second UI li
 | Route | Purpose |
 | --- | --- |
 | `/` | Project list: search, filter, sort, paginate, create |
-| `/projects/:projectId` | Project summary, settings, run start |
-| `/projects/:projectId/agents` | Run workspace: pipeline graph, logs, chat |
+| `/projects/:projectId` | Project page: run workspace (pipeline graph, logs, chat) with a sticky **Project setup** sidebar (settings, run start) |
 | `/profiles` | Profile list; `?edit=<profile_id>` opens the editor workbench |
 | `/connections` | Connections address book |
+| `/costs` | Cost summary: by project (expandable per-model rows) and by model |
 
-Navigation shows exactly Projects, Profiles, Connections. No Overview, Settings,
+Navigation shows exactly Projects, Profiles, Connections, Costs. No Overview, Settings,
 Executions, or Documentation entries.
 
 ## 4. Global Visual Design System
@@ -104,7 +106,7 @@ Status badges always pair color with text.
 
 ## 5. Application Shell
 
-- Collapsible left sidebar: brand, Projects/Profiles/Connections with icons and
+- Collapsible left sidebar: brand, Projects/Profiles/Connections/Costs with icons and
   `aria-current`; expanded ≈248px, collapsed ≈68px with tooltips; preference persists in
   `localStorage['orches-sidebar-collapsed']`.
 - Compact top bar (≈56px): sidebar toggle, route-derived breadcrumb
@@ -149,6 +151,14 @@ Informational address book. Form (name, OS, IP, credential) + table. Credentials
 masked everywhere; reveal is an explicit per-row action backed by the dedicated reveal
 endpoint, abortable, and hidden again on demand; clearing requires explicit confirmation.
 Copy must describe an address book, never an executable lab.
+
+### Costs (`/costs`)
+
+Summary strip (known USD total, requests with an `N unpriced` count, input/output tokens) and
+two tables: by project (every project; `No usage yet` when nothing is recorded; a button
+expands that project's per-model rows) and by model across all projects. Costs are formatted
+via `lib/costs.ts` (`formatUsd`: `—` unknown, `$0.0000` real zero, `(partial)` when some
+requests had no price). Never derive a cost client-side from model names or durations.
 
 ## 7. Profile Editor Workbench (`/profiles?edit=<id>`)
 
@@ -197,11 +207,16 @@ Keyboard: Ctrl/Cmd+S save (outside text fields), Delete removes graph selection 
 canvas has focus, Escape clears selection; edge selection also offers removal in the
 inspector. Never fight native text-field editing.
 
-## 8. Run Workspace (`/projects/:projectId/agents`)
+## 8. Project Page (`/projects/:projectId`)
+
+One page: the run workspace fills the left column; a 360px **Project setup** sidebar on the
+right (sticky; stacks below the workspace under 1400px) holds status/progress, the settings form
+(name, folder, objective, brief, profile) and **Save settings** / **Start pipeline**. Header
+actions: status badge, **Stop run** (running), **Resume run** (finished), Refresh, Remove project.
 
 - Without a run: a clearly labeled **preview** of the selected profile graph (or an empty
-  state prompting profile selection), with a link to project settings. No fabricated
-  status, logs or chat.
+  state prompting profile selection), with an **Edit profile** link. Clicking a node shows its
+  saved configuration; nothing else. No fabricated status, logs or chat.
 - With a run: graph from the immutable run profile snapshot — root plus profile nodes,
   live status classes (pending/running/completed/failed/blocked, color + text), animated
   edges while running, Controls + MiniMap, node drag persistence per project
@@ -215,10 +230,12 @@ inspector. Never fight native text-field editing.
   - **Diagnostics** — raw stderr.
   - **Details** — invocation timestamps, model, return code, error, artifact references.
 - Guidance composer for running agents only (`chat_available`), 4000-char limit.
-- Finished run: header **Resume run** (confirm dialog states how many completed agents are kept)
-  → `POST /api/runs/{id}/resume`; agent dock **Rerun from here** (non-root) → same route with
-  `rerun: [role]`. Carried-over invocations have `reused: true`, are labeled "reused from
-  previous run", and their conversation log is copied so the Conversation tab still works.
+- Finished run: header **Resume run** (confirm dialog states how many completed agents are kept
+  and whether edited agents rerun) → `POST /api/runs/{id}/resume`; agent dock **Rerun from here**
+  (non-root) → same route with `rerun: [role]`. Resume executes the project's saved profile; the
+  "Saved profile changed" banner (`lib/profileDiff.ts`) lists what differs from the run's snapshot
+  and links to the profile editor. Carried-over invocations have `reused: true`, are labeled
+  "reused from previous run", and their conversation log is copied so the Conversation tab still works.
 - Status comes exclusively from polling the real API (2s). No execution history, no simulated
   timeline.
 

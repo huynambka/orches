@@ -47,7 +47,11 @@ def _progress(state: StateStore, run_id: str) -> dict[str, int]:
             "running": sum(v == "running" for v in statuses.values())}
 
 
-def _agent(invocation: dict[str, Any], sessions: ActiveSessionRegistry | None = None) -> dict[str, Any]:
+def _agent(
+    invocation: dict[str, Any],
+    sessions: ActiveSessionRegistry | None = None,
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     chat_available = (
         invocation["status"] == "running"
         and sessions is not None
@@ -59,7 +63,10 @@ def _agent(invocation: dict[str, Any], sessions: ActiveSessionRegistry | None = 
             "finished_at": invocation["finished_at"], "returncode": invocation["returncode"],
             "error": invocation["error"], "output_artifact_id": invocation["output_artifact_id"],
             "stderr_artifact_id": invocation["stderr_artifact_id"], "chat_available": chat_available,
-            "reused": invocation["prompt_version"] == "reused"}
+            "reused": invocation["prompt_version"] == "reused",
+            # Model requests recorded for this invocation; null until one completes
+            # (reused workers made none in this run).
+            "usage": usage}
 
 
 def _project_summary(
@@ -368,6 +375,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     def projects() -> dict[str, Any]:
         return {"projects": [_project_summary(state, item, profile_store) for item in state.list_projects()]}
 
+    @app.get("/api/costs")
+    def costs() -> dict[str, Any]:
+        return {"rows": state.list_model_costs()}
+
     @app.get("/api/pipeline-profiles")
     def pipeline_profiles() -> dict[str, Any]:
         return {"profiles": profile_store.list()}
@@ -633,12 +644,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail=f"old run cleanup failed: {exc}") from exc
         return run_id
 
-    @app.post("/api/projects/{project_id}/runs", status_code=202)
-    async def start_project_run(project_id: str, request: Request) -> dict[str, str]:
-        payload = await _json_object(request)
-        if payload:
-            raise HTTPException(status_code=400, detail="save project settings before starting a run")
-        project, orchestrator = _project_for_run(project_id)
+    def _selected_profile(project: dict[str, Any]) -> Any:
+        """The project's currently saved profile; what Start and Resume execute."""
         profile_id = project.get("pipeline_profile")
         if not profile_id:
             raise HTTPException(status_code=409, detail="select a pipeline profile before starting")
@@ -648,16 +655,28 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         selected_profile = profile_from_record(selected_record)
         if not selected_profile.steps:
             raise HTTPException(status_code=409, detail="pipeline profile is an empty draft")
+        return selected_profile
+
+    @app.post("/api/projects/{project_id}/runs", status_code=202)
+    async def start_project_run(project_id: str, request: Request) -> dict[str, str]:
+        payload = await _json_object(request)
+        if payload:
+            raise HTTPException(status_code=400, detail="save project settings before starting a run")
+        project, orchestrator = _project_for_run(project_id)
+        selected_profile = _selected_profile(project)
         run_id = _reserve_run(project, json.dumps(selected_profile.to_dict(), sort_keys=True))
         _launch_run(project, selected_profile, run_id, orchestrator)
         return {"run_id": run_id, "project_id": project_id, "status": "running"}
 
     @app.post("/api/runs/{run_id}/resume", status_code=202)
     async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
-        """Start a new run of the same snapshot, reusing completed worker outputs.
+        """Start a new run of the project's saved profile, reusing completed worker outputs.
 
-        Body: {"rerun": [node_id, ...]} (optional) forces those workers and every
-        dependent to execute again even though they completed before.
+        Completed workers are carried over only when their definition (model,
+        prompt, effort, dependencies) is unchanged since the finished run; edited
+        nodes and their dependents execute again with the saved profile. Body:
+        {"rerun": [node_id, ...]} (optional) forces those workers and every
+        dependent to execute again as well.
         """
         _require_local(request)
         payload = await _json_object(request)
@@ -674,12 +693,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         snapshot = state.get_run_profile(run_id)
         if not snapshot:
             raise HTTPException(status_code=409, detail="run has no pipeline profile snapshot")
-        profile = profile_from_dict(snapshot)
         project, orchestrator = _project_for_run(source["project_id"])
+        profile = _selected_profile(project)
+        unchanged = profile.unchanged_nodes(profile_from_dict(snapshot))
         # Capture everything from the old run before reservation deletes it.
         completed_rows = {
             item["role"]: item for item in state.list_invocations(run_id)
-            if item["role"] != AgentRole.ROOT.value and item["status"] == "completed" and item.get("output_json")
+            if item["role"] in unchanged and item["status"] == "completed" and item.get("output_json")
         }
         try:
             reusable = profile.reusable_nodes(set(completed_rows), set(rerun_raw))
@@ -738,6 +758,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         task.cancel()
         return {"run_id": run_id, "status": "cancelling"}
 
+    def _run_agents(run_id: str) -> list[dict[str, Any]]:
+        usage = state.run_agent_costs(run_id)
+        return [_agent(item, sessions, usage.get(item["id"])) for item in state.list_invocations(run_id)]
+
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: str) -> dict[str, Any]:
         run = state.get_run(run_id)
@@ -748,7 +772,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "run": run,
             "project": _project_summary(state, project, profile_store) if project else None,
             "pipeline_profile": state.get_run_profile(run_id),
-            "agents": [_agent(item, sessions) for item in state.list_invocations(run_id)],
+            "agents": _run_agents(run_id),
             "artifacts": state.list_artifacts(run_id),
         }
 
@@ -756,7 +780,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     def run_agents(run_id: str) -> dict[str, Any]:
         if not state.get_run(run_id):
             raise HTTPException(status_code=404, detail="run not found")
-        return {"agents": [_agent(item, sessions) for item in state.list_invocations(run_id)]}
+        return {"agents": _run_agents(run_id)}
 
     @app.post("/api/runs/{run_id}/agents/{invocation_id}/messages", status_code=202)
     async def send_agent_message(run_id: str, invocation_id: str, request: Request) -> dict[str, Any]:
