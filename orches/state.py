@@ -21,7 +21,7 @@ from .models import (
 
 _LOG = logging.getLogger("orches.state")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEGACY_APP_DIR = ".cve-forge"
 LEGACY_MARKER = "project.json"
 
@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     returncode INTEGER,
     error TEXT,
     output_artifact_id TEXT,
-    stderr_artifact_id TEXT
+    stderr_artifact_id TEXT,
+    output_json TEXT
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
@@ -203,6 +204,11 @@ class StateStore:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            # Additive upgrade for v2 stores: CREATE TABLE IF NOT EXISTS keeps the
+            # old column set, so add output_json explicitly.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_invocations)")}
+            if "output_json" not in columns:
+                conn.execute("ALTER TABLE agent_invocations ADD COLUMN output_json TEXT")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._stage_external_legacy()
         self._run_pending_cleanups()
@@ -614,18 +620,39 @@ class StateStore:
         error: str | None,
         output_artifact_id: str | None,
         stderr_artifact_id: str | None,
+        output_json: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """UPDATE agent_invocations SET status=?,finished_at=?,returncode=?,error=?,
-                   output_artifact_id=?,stderr_artifact_id=? WHERE id=?""",
+                   output_artifact_id=?,stderr_artifact_id=?,output_json=? WHERE id=?""",
                 (status.value, finished_at, returncode, error, output_artifact_id,
-                 stderr_artifact_id, invocation_id),
+                 stderr_artifact_id, output_json, invocation_id),
             )
             if status != AgentStatus.RUNNING:
                 conn.execute(
                     "DELETE FROM connection_claims WHERE invocation_id=?", (invocation_id,)
+                )
+
+    def carry_over_invocations(self, run_id: str, invocations: list[dict[str, Any]]) -> None:
+        """Record completed workers reused from a previous run of the same snapshot."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone() is None:
+                raise KeyError("run not found")
+            for item in invocations:
+                conn.execute(
+                    """INSERT INTO agent_invocations(
+                        run_id,role,model_selector,thinking,status,started_at,finished_at,
+                        prompt_version,returncode,error,output_artifact_id,stderr_artifact_id,output_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        run_id, item["role"], item["model_selector"], item["thinking"],
+                        AgentStatus.COMPLETED.value, item["started_at"], item["finished_at"],
+                        "reused", item["returncode"], None, item.get("output_artifact_id"),
+                        item.get("stderr_artifact_id"), item.get("output_json"),
+                    ),
                 )
 
     # ------------------------------------------------------------------ runs

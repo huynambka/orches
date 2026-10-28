@@ -45,6 +45,16 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
   **Cancel**: `POST /api/runs/{run_id}/cancel` (202) cancels the API-owned run task →
   run `failed` / error `run cancelled`; 404 unknown, 409 not running / not managed by this
   API process (e.g. CLI runs).
+  **Resume**: `POST /api/runs/{run_id}/resume` (202, body optional `{"rerun": [node_ids]}`) on a
+  terminal run → new run of the same snapshot; completed workers whose whole dependency chain
+  also completed are carried over (`PipelineProfile.reusable_nodes`), minus `rerun` nodes and
+  their dependents. Carry-over = copy `raw/<node>.*` into the new run (artifacts re-registered)
+  + `StateStore.carry_over_invocations` (`prompt_version='reused'`, `output_json`) + controller
+  seeded via `Orchestrator.run(completed_outputs=…)` so `get_status` reports them completed,
+  `read_agent_output` returns the saved output (`reused: true`) and `run_agent` refuses them;
+  root context carries `resumed_from_run`. Capture happens before `reserve_project_run` deletes
+  the old run. Worker final output is persisted as `agent_invocations.output_json` (schema v3,
+  additive `ALTER TABLE` upgrade). 409 if the source run is still running; 400 unknown rerun ids.
 - **Connections**: address book (name/os/ip/cred); cred masked in all API list/mutation
   responses, explicit reveal route only. Agents access it via host tools: root + workers
   get `read_connections`/`claim_connection`/`release_connection`/`reveal_connection`
@@ -80,7 +90,8 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
    undo/redo 50 snapshots, client validation `validateProfileDraft`, 409 conflict
    reload/keep-draft, dirty guards); run page shows honest profile **preview** when no run
    exists (no fabricated status), details dock tabs Conversation/Diagnostics/Details,
-   **Stop run** buttons (agents page header + project page) with confirm dialog.
+   **Stop run** buttons (agents page header + project page) with confirm dialog; **Resume run**
+   (header, terminal runs) and **Rerun from here** (agent dock, non-root) call `/resume`.
 6. Orchestrator model selectable per profile: root node inspector → "Orchestrator model"
    select (`root_model`), recorded on root invocation and in run snapshot.
 7. Stuck-pipeline hardening (verified live against real omp): worker tool failures are

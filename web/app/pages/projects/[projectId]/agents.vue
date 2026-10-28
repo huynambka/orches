@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { cancelRun, getProject, getRun } from '~/lib/api';
+import { cancelRun, getProject, getRun, resumeRun } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
 import type { ProjectDetail, RunDetail } from '~/lib/types';
 
@@ -54,6 +54,38 @@ const stopRun = async () => {
   }
 };
 
+const resuming = ref(false);
+const canResume = computed(() => {
+  const current = run.value;
+  return Boolean(current && current.run.status !== 'running' && current.pipeline_profile);
+});
+
+/** New run of the same snapshot. `rerun` forces one agent (and its dependents) to execute again. */
+const resume = async (rerun: string[] = []) => {
+  const current = run.value;
+  if (!current || !canResume.value || resuming.value) return;
+  const completed = current.agents.filter((agent) => agent.role !== 'root' && agent.status === 'completed').map((agent) => agent.role);
+  const target = rerun[0];
+  const accepted = await confirmDialog.value?.ask({
+    title: target ? 'Rerun from this agent' : 'Resume run',
+    message: target
+      ? 'Start a new run that reruns this agent and everything that depends on it. Other completed agents keep their previous output. The finished run is replaced.'
+      : `Start a new run from the saved snapshot. ${completed.length} completed agent${completed.length === 1 ? '' : 's'} keep their output; failed and unstarted agents run again. The finished run is replaced.`,
+    confirmLabel: target ? 'Rerun from here' : 'Resume run',
+  });
+  if (!accepted) return;
+  resuming.value = true;
+  stopError.value = '';
+  try {
+    await resumeRun(current.run.run_id, rerun);
+    await load();
+  } catch (caught) {
+    stopError.value = caught instanceof Error ? caught.message : 'Unable to resume the run';
+  } finally {
+    resuming.value = false;
+  }
+};
+
 const encode = (id: string) => encodeURIComponent(id);
 const previewProfile = computed(() => project.value?.pipeline_profile_definition ?? null);
 </script>
@@ -79,6 +111,14 @@ const previewProfile = computed(() => project.value?.pipeline_profile_definition
             :disabled="stopping"
             @click="() => void stopRun()"
           >{{ stopping ? 'Stopping…' : 'Stop run' }}</button>
+          <button
+            v-if="canResume"
+            class="control control-primary"
+            type="button"
+            :disabled="resuming"
+            title="New run from the same snapshot; completed agents keep their output"
+            @click="() => void resume()"
+          >{{ resuming ? 'Resuming…' : 'Resume run' }}</button>
           <NuxtLink class="control" :to="`/projects/${encode(projectId)}`">Project settings</NuxtLink>
         </div>
       </div>
@@ -95,6 +135,7 @@ const previewProfile = computed(() => project.value?.pipeline_profile_definition
         :detail="run"
         :layout="project.agent_layout"
         @refresh="load"
+        @rerun="(role) => void resume([role])"
       />
 
       <!-- No run yet: a labeled preview of the selected profile, never an invented execution. -->

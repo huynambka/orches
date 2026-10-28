@@ -19,9 +19,12 @@ _ROOT_SYSTEM = (
     "done. A claim is exclusive to the agent that made it: if a claim fails because another "
     "agent is using the connection, pick an available one or wait. Workers have the same "
     "tools and must claim for themselves, so point a worker at a connection by name in "
-    "guidance instead of claiming it on its behalf or copying credentials. Continue until "
-    "every configured worker has completed, then call finish_pipeline. Do not claim "
-    "completion unless finish_pipeline succeeds."
+    "guidance instead of claiming it on its behalf or copying credentials. When the context "
+    "contains resumed_from_run, the listed workers already completed in an earlier run: "
+    "get_status reports them completed, read_agent_output returns their saved output, and "
+    "run_agent refuses to start them again. Continue until every configured worker has "
+    "completed, then call finish_pipeline. Do not claim completion unless finish_pipeline "
+    "succeeds."
 )
 
 _WORKER_SYSTEM = (

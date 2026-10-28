@@ -71,6 +71,10 @@ export const getLogs = (runId: string, invocationId: number, stream: 'stdout' | 
   request<LogPage>(`/runs/${encodeURIComponent(runId)}/agents/${invocationId}/logs?stream=${stream}&offset=${Math.max(0, offset)}&limit=${limit}`);
 export const cancelRun = (id: string) =>
   request<{ run_id: string; status: 'cancelling' }>(`/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+export interface ResumedRun { run_id: string; project_id: string; status: 'running'; resumed_from: string; reused: string[] }
+/** New run of the same snapshot; completed workers are reused unless listed in `rerun` (plus their dependents). */
+export const resumeRun = (id: string, rerun: string[] = []) =>
+  request<ResumedRun>(`/runs/${encodeURIComponent(id)}/resume`, jsonMutation('POST', rerun.length ? { rerun } : {}));
 export const getConnections = () => request<{ connections: Connection[] }>('/connections');
 export const createConnection = (connection: NewConnection) =>
   request<Connection>('/connections', jsonMutation('POST', connection));

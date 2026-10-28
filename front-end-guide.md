@@ -215,8 +215,12 @@ inspector. Never fight native text-field editing.
   - **Diagnostics** — raw stderr.
   - **Details** — invocation timestamps, model, return code, error, artifact references.
 - Guidance composer for running agents only (`chat_available`), 4000-char limit.
-- Status comes exclusively from polling the real API (2s). No cancel button, no execution
-  history, no simulated timeline.
+- Finished run: header **Resume run** (confirm dialog states how many completed agents are kept)
+  → `POST /api/runs/{id}/resume`; agent dock **Rerun from here** (non-root) → same route with
+  `rerun: [role]`. Carried-over invocations have `reused: true`, are labeled "reused from
+  previous run", and their conversation log is copied so the Conversation tab still works.
+- Status comes exclusively from polling the real API (2s). No execution history, no simulated
+  timeline.
 
 ## 9. Motion, Responsiveness, Accessibility
 

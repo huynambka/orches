@@ -58,7 +58,8 @@ def _agent(invocation: dict[str, Any], sessions: ActiveSessionRegistry | None = 
             "status": invocation["status"], "started_at": invocation["started_at"],
             "finished_at": invocation["finished_at"], "returncode": invocation["returncode"],
             "error": invocation["error"], "output_artifact_id": invocation["output_artifact_id"],
-            "stderr_artifact_id": invocation["stderr_artifact_id"], "chat_available": chat_available}
+            "stderr_artifact_id": invocation["stderr_artifact_id"], "chat_available": chat_available,
+            "reused": invocation["prompt_version"] == "reused"}
 
 
 def _project_summary(
@@ -558,58 +559,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="project not found")
         return {"agent_layout": layout}
 
-    @app.post("/api/projects/{project_id}/runs", status_code=202)
-    async def start_project_run(project_id: str, request: Request) -> dict[str, str]:
-        payload = await _json_object(request)
-        if payload:
-            raise HTTPException(status_code=400, detail="save project settings before starting a run")
-        project = state.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="project not found")
-        try:
-            assert_project_marker(project["project_directory"], project_id)
-        except ProjectDirectoryError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if not project["target"]:
-            raise HTTPException(status_code=400, detail="set a project objective before starting")
-        profile_id = project.get("pipeline_profile")
-        if not profile_id:
-            raise HTTPException(status_code=409, detail="select a pipeline profile before starting")
-        selected_record = profile_store.get(profile_id)
-        if selected_record is None:
-            raise HTTPException(status_code=409, detail=f"pipeline profile is not configured: {profile_id}")
-        selected_profile = profile_from_record(selected_record)
-        if not selected_profile.steps:
-            raise HTTPException(status_code=409, detail="pipeline profile is an empty draft")
-        try:
-            from .cli import build_orchestrator
-            orchestrator = build_orchestrator(
-                config, require_omp=True, sessions=sessions,
-                project_directory=project["project_directory"],
-            )
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        run_id: str | None = None
-        try:
-            run_id, old_ids = state.reserve_project_run(
-                project_id, expected_updated_at=project["updated_at"], source="api",
-                profile_json=json.dumps(selected_profile.to_dict(), sort_keys=True),
-            )
-            for old_id in old_ids:
-                remove_owned_run(project["project_directory"], old_id)
-        except (ProjectConflictError, KeyError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except (ProjectDirectoryError, OSError) as exc:
-            if run_id:
-                state.update_run(run_id, "failed", f"old run cleanup failed: {exc}")
-            raise HTTPException(status_code=503, detail=f"old run cleanup failed: {exc}") from exc
+    def _launch_run(
+        project: dict[str, Any], profile: Any, run_id: str, orchestrator: Any,
+        completed_outputs: dict[str, dict[str, Any]] | None = None, resumed_from: str | None = None,
+    ) -> None:
+        project_id = project["project_id"]
 
         async def execute() -> None:
             try:
                 await orchestrator.run(
-                    project_id=project_id, run_id=run_id, profile=selected_profile,
+                    project_id=project_id, run_id=run_id, profile=profile,
                     target=project["target"], initial_prompt=project["initial_prompt"],
                     project_directory=project["project_directory"],
+                    completed_outputs=completed_outputs, resumed_from=resumed_from,
                 )
             except asyncio.CancelledError:
                 current = state.get_run(run_id)
@@ -627,13 +589,138 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         active_tasks.add(task)
         run_tasks[run_id] = task
 
-        def _forget(done: asyncio.Task[None], *, run_id: str = run_id) -> None:
+        def _forget(done: asyncio.Task[None]) -> None:
             active_tasks.discard(done)
             run_tasks.pop(run_id, None)
             cancelled_runs.discard(run_id)
 
         task.add_done_callback(_forget)
+
+    def _project_for_run(project_id: str) -> tuple[dict[str, Any], Any]:
+        project = state.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="project not found")
+        try:
+            assert_project_marker(project["project_directory"], project_id)
+        except ProjectDirectoryError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not project["target"]:
+            raise HTTPException(status_code=400, detail="set a project objective before starting")
+        try:
+            from .cli import build_orchestrator
+            orchestrator = build_orchestrator(
+                config, require_omp=True, sessions=sessions,
+                project_directory=project["project_directory"],
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return project, orchestrator
+
+    def _reserve_run(project: dict[str, Any], profile_json: str) -> str:
+        run_id: str | None = None
+        try:
+            run_id, old_ids = state.reserve_project_run(
+                project["project_id"], expected_updated_at=project["updated_at"], source="api",
+                profile_json=profile_json,
+            )
+            for old_id in old_ids:
+                remove_owned_run(project["project_directory"], old_id)
+        except (ProjectConflictError, KeyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ProjectDirectoryError, OSError) as exc:
+            if run_id:
+                state.update_run(run_id, "failed", f"old run cleanup failed: {exc}")
+            raise HTTPException(status_code=503, detail=f"old run cleanup failed: {exc}") from exc
+        return run_id
+
+    @app.post("/api/projects/{project_id}/runs", status_code=202)
+    async def start_project_run(project_id: str, request: Request) -> dict[str, str]:
+        payload = await _json_object(request)
+        if payload:
+            raise HTTPException(status_code=400, detail="save project settings before starting a run")
+        project, orchestrator = _project_for_run(project_id)
+        profile_id = project.get("pipeline_profile")
+        if not profile_id:
+            raise HTTPException(status_code=409, detail="select a pipeline profile before starting")
+        selected_record = profile_store.get(profile_id)
+        if selected_record is None:
+            raise HTTPException(status_code=409, detail=f"pipeline profile is not configured: {profile_id}")
+        selected_profile = profile_from_record(selected_record)
+        if not selected_profile.steps:
+            raise HTTPException(status_code=409, detail="pipeline profile is an empty draft")
+        run_id = _reserve_run(project, json.dumps(selected_profile.to_dict(), sort_keys=True))
+        _launch_run(project, selected_profile, run_id, orchestrator)
         return {"run_id": run_id, "project_id": project_id, "status": "running"}
+
+    @app.post("/api/runs/{run_id}/resume", status_code=202)
+    async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
+        """Start a new run of the same snapshot, reusing completed worker outputs.
+
+        Body: {"rerun": [node_id, ...]} (optional) forces those workers and every
+        dependent to execute again even though they completed before.
+        """
+        _require_local(request)
+        payload = await _json_object(request)
+        if set(payload) - {"rerun"}:
+            raise HTTPException(status_code=400, detail="body may contain only rerun")
+        rerun_raw = payload.get("rerun", [])
+        if not isinstance(rerun_raw, list) or not all(isinstance(item, str) for item in rerun_raw):
+            raise HTTPException(status_code=400, detail="rerun must be a list of node ids")
+        source = state.get_run(run_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="run not found")
+        if source["status"] == "running":
+            raise HTTPException(status_code=409, detail="run is still running; stop it first")
+        snapshot = state.get_run_profile(run_id)
+        if not snapshot:
+            raise HTTPException(status_code=409, detail="run has no pipeline profile snapshot")
+        profile = profile_from_dict(snapshot)
+        project, orchestrator = _project_for_run(source["project_id"])
+        # Capture everything from the old run before reservation deletes it.
+        completed_rows = {
+            item["role"]: item for item in state.list_invocations(run_id)
+            if item["role"] != AgentRole.ROOT.value and item["status"] == "completed" and item.get("output_json")
+        }
+        try:
+            reusable = profile.reusable_nodes(set(completed_rows), set(rerun_raw))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        old_root = app_root(project["project_directory"]) / "runs" / run_id / "raw"
+        carried: list[dict[str, Any]] = []
+        seeds: dict[str, dict[str, Any]] = {}
+        for node_id in sorted(reusable):
+            row = completed_rows[node_id]
+            logs: dict[str, str] = {}
+            for suffix in ("stdout.jsonl", "stderr.txt"):
+                path = old_root / f"{node_id}.{suffix}"
+                if path.is_file():
+                    logs[suffix] = path.read_text(encoding="utf-8", errors="replace")
+            carried.append({**row, "_logs": logs})
+        new_run_id = _reserve_run(project, json.dumps(profile.to_dict(), sort_keys=True))
+        for item in carried:
+            artifact_ids: dict[str, str | None] = {"output_artifact_id": None, "stderr_artifact_id": None}
+            for suffix, key, media in (
+                ("stdout.jsonl", "output_artifact_id", "text/plain"),
+                ("stderr.txt", "stderr_artifact_id", "text/plain"),
+            ):
+                if suffix in item["_logs"]:
+                    artifact = orchestrator.artifacts.write_text(
+                        new_run_id, f"raw/{item['role']}.{suffix}", item["_logs"][suffix], media_type=media,
+                    )
+                    artifact_ids[key] = artifact.artifact_id
+            item.update(artifact_ids)
+            seeds[item["role"]] = {
+                "output": json.loads(item["output_json"]),
+                "artifact_ids": [value for value in artifact_ids.values() if value],
+            }
+        state.carry_over_invocations(
+            new_run_id, [{key: value for key, value in item.items() if key != "_logs"} for item in carried],
+        )
+        _launch_run(project, profile, new_run_id, orchestrator, completed_outputs=seeds, resumed_from=run_id)
+        return {
+            "run_id": new_run_id, "project_id": project["project_id"], "status": "running",
+            "resumed_from": run_id, "reused": sorted(seeds),
+        }
 
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str, request: Request) -> dict[str, str]:

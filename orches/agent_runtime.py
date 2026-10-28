@@ -181,6 +181,8 @@ class AgentRunner:
                 invocation_id, status=status, finished_at=utc_now(), returncode=returncode,
                 error=error, output_artifact_id=output_artifact_id,
                 stderr_artifact_id=stderr_artifact_id,
+                # Persisted so a later run can resume from this worker's result.
+                output_json=json.dumps({"text": final_text}) if status == AgentStatus.COMPLETED else None,
             )
         # Downstream nodes and the root receive the agent's final answer; the full
         # JSONL event log is kept only as the stdout artifact.

@@ -101,6 +101,8 @@ export interface AgentInvocation {
   output_artifact_id: string | null;
   stderr_artifact_id: string | null;
   chat_available: boolean;
+  /** Completed in an earlier run and carried into this one by Resume. */
+  reused: boolean;
 }
 
 export interface Artifact {

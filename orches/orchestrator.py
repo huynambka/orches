@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .agent_runtime import AgentRunner
 from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, handle_connection_tool, masked_connections
@@ -36,6 +36,7 @@ class PipelineController:
     def __init__(
         self, owner: "Orchestrator", profile: PipelineProfile, run_id: str,
         base_context: dict[str, Any], report: dict[str, Any],
+        completed_outputs: Mapping[str, dict[str, Any]] | None = None,
     ) -> None:
         self.owner = owner
         self.profile = profile
@@ -45,12 +46,26 @@ class PipelineController:
         self.statuses = {step.id: "pending" for step in profile.steps}
         self.outputs: dict[str, dict[str, Any]] = {}
         self.results: dict[str, Any] = {}
+        self.reused_artifacts: dict[str, list[str]] = {}
         self.tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self.lock = asyncio.Lock()
         self.finish_requested = False
         self.fatal_error: str | None = None
         self.fatal = asyncio.Event()
         self.root_invocation_id: int | None = None
+        # Workers carried over from a previous run start completed: the root reads
+        # their output but cannot start them again. Seed shape per node:
+        # {"output": {...}, "artifact_ids": [...]}.
+        for node_id, seed in (completed_outputs or {}).items():
+            if node_id not in self.statuses:
+                continue
+            self.statuses[node_id] = "completed"
+            self.outputs[node_id] = dict(seed["output"])
+            self.reused_artifacts[node_id] = list(seed.get("artifact_ids", []))
+            report["stages"][node_id] = {
+                "status": "completed", "reused": True, "output": self.outputs[node_id],
+                "artifact_ids": self.reused_artifacts[node_id],
+            }
 
     def bind_root_invocation(self, invocation_id: int) -> None:
         self.root_invocation_id = invocation_id
@@ -135,9 +150,13 @@ class PipelineController:
                 return self._error("unknown worker id")
             if self.statuses[node_id] != "completed":
                 return self._error("worker output is not completed")
+            artifact_ids = (
+                list(self.results[node_id].artifact_ids) if node_id in self.results
+                else self.reused_artifacts.get(node_id, [])
+            )
             return self._bounded({
-                "id": node_id, "output": self.outputs[node_id],
-                "artifact_ids": list(self.results[node_id].artifact_ids),
+                "id": node_id, "output": self.outputs[node_id], "artifact_ids": artifact_ids,
+                "reused": node_id not in self.results,
             })
         if name == "finish_pipeline":
             async with self.lock:
@@ -168,7 +187,11 @@ class PipelineController:
                     "no new workers may start — stop and summarize now"
                 )
             if self.statuses[node_id] != "pending":
-                return self._error(f"{node_id} has already been started")
+                return self._error(
+                    f"{node_id} has already been started"
+                    if node_id in self.results or node_id in self.tasks
+                    else f"{node_id} completed in a previous run; read its output instead of rerunning it"
+                )
             if not self._ready(node_id):
                 return self._error(f"{node_id} dependencies are not complete")
             self.statuses[node_id] = "running"
@@ -253,6 +276,8 @@ class Orchestrator:
         target: str = "",
         initial_prompt: str = "",
         project_directory: str | Path = "",
+        completed_outputs: Mapping[str, dict[str, Any]] | None = None,
+        resumed_from: str | None = None,
     ) -> dict[str, Any]:
         if not profile.steps:
             raise ValueError("pipeline profile does not contain any agents")
@@ -274,7 +299,12 @@ class Orchestrator:
                 target, initial_prompt, str(project_directory),
                 connections=masked_connections(self.state),
             )
-            controller = PipelineController(self, profile, run_id, context, report)
+            if completed_outputs:
+                context["resumed_from_run"] = {
+                    "run_id": resumed_from,
+                    "completed_workers": sorted(node_id for node_id in completed_outputs if node_id in {s.id for s in profile.steps}),
+                }
+            controller = PipelineController(self, profile, run_id, context, report, completed_outputs)
             root_session: list[Any] = [None]
             root_task = asyncio.create_task(
                 self.runner.run_root(

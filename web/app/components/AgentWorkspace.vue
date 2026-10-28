@@ -3,7 +3,9 @@ import { sendAgentMessage } from '~/lib/api';
 import type { AgentId, AgentLayout, AgentStatus, RunDetail } from '~/lib/types';
 
 const props = defineProps<{ projectId: string; runId: string; detail: RunDetail; layout: AgentLayout }>();
-const emit = defineEmits<{ refresh: [] }>();
+const emit = defineEmits<{ refresh: []; rerun: [AgentId] }>();
+
+const runFinished = computed(() => props.detail.run.status !== 'running');
 
 const profile = computed(() => props.detail.pipeline_profile);
 const steps = computed(() => profile.value?.steps ?? []);
@@ -80,10 +82,17 @@ const formatTime = (value: string | null) => (value ? new Date(value).toLocaleSt
       <div class="workflow-panel-heading">
         <div>
           <h3>{{ labelFor(selected) }}</h3>
-          <span class="inline-note">{{ invocation ? `${invocation.model_selector || 'default model'} · ${invocation.status}` : 'Invocation pending' }}</span>
+          <span class="inline-note">{{ invocation ? `${invocation.model_selector || 'default model'} · ${invocation.status}${invocation.reused ? ' · reused from previous run' : ''}` : 'Invocation pending' }}</span>
         </div>
         <span class="project-head-actions">
           <StatusBadge v-if="invocation" :status="invocation.status" />
+          <button
+            v-if="invocation && runFinished && selected !== 'root'"
+            class="control"
+            type="button"
+            title="Start a new run that keeps other completed agents and reruns this one and everything after it"
+            @click="emit('rerun', selected)"
+          >Rerun from here</button>
           <button class="control" type="button" :aria-expanded="dockOpen" @click="dockOpen = !dockOpen">{{ dockOpen ? 'Hide details' : 'Show details' }}</button>
         </span>
       </div>

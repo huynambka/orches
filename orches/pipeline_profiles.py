@@ -101,6 +101,32 @@ class PipelineProfile:
             result["root_thinking"] = self.root_thinking
         return result
 
+    def reusable_nodes(self, completed: set[str], rerun: set[str] = frozenset()) -> set[str]:
+        """Completed nodes a resumed run may carry over.
+
+        A node is reusable only when every dependency is reusable too, and never
+        when it or any ancestor is explicitly scheduled for rerun; dependents of
+        a rerun node must see its new output.
+        """
+        known = {step.id for step in self.steps}
+        unknown = rerun - known
+        if unknown:
+            raise ValueError(f"unknown rerun node ids: {sorted(unknown)}")
+        memo: dict[str, bool] = {}
+
+        def reusable(node_id: str) -> bool:
+            if node_id in memo:
+                return memo[node_id]
+            step = self.step(node_id)
+            value = (
+                node_id in completed and node_id not in rerun
+                and all(reusable(dependency) for dependency in step.depends_on)
+            )
+            memo[node_id] = value
+            return value
+
+        return {step.id for step in self.steps if reusable(step.id)}
+
     def step(self, node_id: str) -> PipelineStep:
         return next(step for step in self.steps if step.id == node_id)
 

@@ -50,6 +50,13 @@ longer complete: the host refuses to start further workers, lets in-flight worke
 root a short grace window to wrap up, then aborts it, and the run ends `blocked` with the worker's
 error instead of idling until the root timeout.
 
+A finished run (`completed`, `failed` or `blocked`) can be **resumed**: the Manage agents page offers
+**Resume run**, which starts a new run from the same profile snapshot and carries over every worker
+that completed (its output, logs and status), so only failed and unstarted workers execute again.
+Selecting a worker and choosing **Rerun from here** carries over everything except that worker and
+its dependents. Carried-over workers show "reused from previous run"; the root reads their saved
+output and cannot start them again. The previous run is replaced, as with any new run.
+
 The root orchestrator is not a worker node: it cannot be moved, connected or deleted, but selecting
 it lets you pick its **model** (`root_model`, defaulting to `[roles.root] model_selector` in
 `orches.toml`) and an **Orchestrator prompt** (`root_prompt`) that is appended to the built-in
