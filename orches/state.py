@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .costs import model_key
 from .models import (
@@ -22,7 +22,7 @@ from .models import (
 
 _LOG = logging.getLogger("orches.state")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LEGACY_APP_DIR = ".cve-forge"
 LEGACY_MARKER = "project.json"
 
@@ -164,6 +164,21 @@ CREATE TABLE IF NOT EXISTS legacy_cleanup (
     source_db TEXT PRIMARY KEY,
     manifest_json TEXT NOT NULL,
     cleaned INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS mcp_catalog (
+    name TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_mcp_sources (
+    project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    catalog_name TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    PRIMARY KEY(project_id, name)
 );
 """
 
@@ -844,6 +859,99 @@ class StateStore:
             item = dict(row)
             result[int(item.pop("invocation_id"))] = item
         return result
+
+    # --------------------------------------------------------- MCP catalog
+
+    @staticmethod
+    def _canonical_mcp_json(config: dict[str, Any]) -> str:
+        return json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+    def list_mcp_catalog(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name, config_json, revision, created_at, updated_at FROM mcp_catalog ORDER BY name"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_mcp_catalog(self, name: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT name, config_json, revision, created_at, updated_at FROM mcp_catalog WHERE name=?",
+                (name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_mcp_catalog(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        payload = self._canonical_mcp_json(config)
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO mcp_catalog(name, config_json, revision, created_at, updated_at) VALUES(?,?,1,?,?)",
+                    (name, payload, now, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ProjectConflictError(f"catalog entry {name!r} already exists") from exc
+        return self.get_mcp_catalog(name)  # type: ignore[return-value]
+
+    def update_mcp_catalog(self, name: str, config: dict[str, Any], revision: int) -> dict[str, Any]:
+        payload = self._canonical_mcp_json(config)
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE mcp_catalog SET config_json=?, revision=revision+1, updated_at=? WHERE name=? AND revision=?",
+                (payload, utc_now(), name, revision),
+            )
+            if result.rowcount != 1:
+                if conn.execute("SELECT 1 FROM mcp_catalog WHERE name=?", (name,)).fetchone() is None:
+                    raise KeyError(f"catalog entry {name!r} not found")
+                raise ProjectConflictError(f"catalog entry {name!r} revision is stale")
+        return self.get_mcp_catalog(name)  # type: ignore[return-value]
+
+    def delete_mcp_catalog(self, name: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute("DELETE FROM mcp_catalog WHERE name=?", (name,)).rowcount == 1
+
+    # ------------------------------------------------ project MCP provenance
+
+    def get_project_mcp_sources(self, project_id: str) -> dict[str, dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name, catalog_name, source_revision, snapshot_sha256 FROM project_mcp_sources WHERE project_id=?",
+                (project_id,),
+            ).fetchall()
+        return {row["name"]: dict(row) for row in rows}
+
+    def set_project_mcp_source(
+        self, project_id: str, name: str, source: dict[str, Any] | None, *, write_file: Callable[[], None],
+    ) -> None:
+        """Update provenance and write the project file inside one transaction.
+
+        If *source* is None the row is deleted (removal); otherwise it is upserted.
+        *write_file* performs the atomic file replacement before the transaction commits.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            running = conn.execute(
+                "SELECT 1 FROM runs WHERE project_id=? AND status='running' LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if running:
+                raise ProjectConflictError("cannot modify MCP servers while a run is active")
+            write_file()
+            if source is None:
+                conn.execute(
+                    "DELETE FROM project_mcp_sources WHERE project_id=? AND name=?",
+                    (project_id, name),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO project_mcp_sources(project_id, name, catalog_name, source_revision, snapshot_sha256)
+                       VALUES(?,?,?,?,?)
+                       ON CONFLICT(project_id, name) DO UPDATE SET
+                           catalog_name=excluded.catalog_name, source_revision=excluded.source_revision,
+                           snapshot_sha256=excluded.snapshot_sha256""",
+                    (project_id, name, source["catalog_name"], source["source_revision"], source["snapshot_sha256"]),
+                )
 
     # ------------------------------------------------------------------ runs
     def _set_project_after_run(self, conn: sqlite3.Connection, run_id: str, status: str) -> None:

@@ -54,6 +54,7 @@ const crumbs = computed(() => {
   const path = route.path;
   if (path.startsWith('/profiles')) return [{ label: 'Profiles', to: '/profiles' }];
   if (path.startsWith('/connections')) return [{ label: 'Connections', to: '/connections' }];
+  if (path.startsWith('/mcp-servers')) return [{ label: 'MCP servers', to: '/mcp-servers' }];
   if (path.startsWith('/costs')) return [{ label: 'Costs', to: '/costs' }];
   const result = [{ label: 'Projects', to: '/' }];
   const projectId = route.params.projectId;

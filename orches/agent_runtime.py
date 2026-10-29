@@ -289,7 +289,7 @@ class AgentRunner:
                     prompt,
                     append_system_prompt=system,
                     cwd=workspace,
-                    project_directory=None,
+                    project_directory=project_directory,
                     session_dir=session_dir,
                     model=config.model_selector,
                     thinking=config.thinking,

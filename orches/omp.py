@@ -437,7 +437,14 @@ class OmpClient:
         selected = model or self.default_model
         if selected: args += ["--model", selected]
         if append_system_prompt: args += ["--append-system-prompt", append_system_prompt]
-        if project_directory: args += ["--add-dir", str(Path(project_directory).resolve())]
+        if project_directory:
+            resolved_project = str(Path(project_directory).resolve())
+            args += ["--cwd", resolved_project]
+            # When the logical project cwd differs from the subprocess workspace,
+            # expose the workspace as an additional directory so the agent still
+            # has file access to it.
+            if cwd and str(Path(cwd).resolve()) != resolved_project:
+                args += ["--add-dir", str(Path(cwd).resolve())]
         if session_dir: args += ["--session-dir", str(Path(session_dir).resolve())]
         if tools: args += ["--tools", ",".join(tools)]
         if context_files:
@@ -489,3 +496,115 @@ class OmpClient:
                 else: proc.kill()
             except ProcessLookupError: pass
             await proc.wait()
+
+    async def probe_mcp(self, project_directory: Path, name: str, *, timeout: float = 40) -> dict[str, Any]:
+        """Probe a single MCP server via an ephemeral OMP RPC session's /mcp test.
+
+        Returns ``{name, status, checked_at, detail}``.  Never calls a model.
+        """
+        args = [
+            self.omp_bin, "--mode", "rpc", "--no-session",
+            "--cwd", str(project_directory.resolve()),
+            "--no-tools", "--no-context-files", "--no-extensions",
+            "--no-skills", "--no-rules", "--no-lsp", "--no-pty",
+        ]
+        env = os.environ.copy()
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE, env=env,
+                creationflags=flags, start_new_session=os.name != "nt",
+                limit=256 * 1024,
+            )
+            return await asyncio.wait_for(
+                self._run_probe(proc, name), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return {"name": name, "status": "timeout", "checked_at": _utc_now(),
+                    "detail": f"probe timed out after {timeout}s"}
+        except Exception as exc:
+            return {"name": name, "status": "failed", "checked_at": _utc_now(),
+                    "detail": f"probe error: {type(exc).__name__}"}
+        finally:
+            if proc is not None:
+                if proc.stdin:
+                    try: proc.stdin.close()
+                    except Exception: pass
+                try: await asyncio.wait_for(proc.wait(), timeout=3)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    await self._terminate(proc)
+
+    async def _run_probe(self, proc: asyncio.subprocess.Process, name: str) -> dict[str, Any]:
+        assert proc.stdout is not None and proc.stdin is not None
+        # Wait for RPC ready
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return {"name": name, "status": "failed", "checked_at": _utc_now(),
+                        "detail": "omp process exited before ready"}
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") in ("ready", "rpc_ready", "session_ready"):
+                break
+
+        # Send /mcp test
+        prompt_cmd = json.dumps({
+            "id": "check", "type": "prompt",
+            "message": f"/mcp test {name}",
+        })
+        proc.stdin.write((prompt_cmd + "\n").encode())
+        await proc.stdin.drain()
+
+        # Collect output
+        command_outputs: list[str] = []
+        agent_invoked: bool | None = None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            etype = event.get("type")
+            if etype == "command_output":
+                text = event.get("text", "")
+                if isinstance(text, str):
+                    command_outputs.append(text)
+            elif etype == "response" and event.get("id") == "check":
+                data = event.get("data") or {}
+                if isinstance(data, dict) and "agentInvoked" in data:
+                    agent_invoked = data["agentInvoked"]
+                if agent_invoked is True:
+                    # Abort immediately: don't let it call a model
+                    break
+            elif etype == "prompt_result" and event.get("id") == "check":
+                if "agentInvoked" in event:
+                    agent_invoked = event["agentInvoked"]
+                break
+            elif etype == "agent_end" and event.get("isTerminal", True) is not False:
+                break
+
+        if agent_invoked is True:
+            return {"name": name, "status": "failed", "checked_at": _utc_now(),
+                    "detail": "probe unexpectedly invoked the model agent"}
+
+        output = "\n".join(command_outputs)
+        success_prefix = f'Server "{name}" connected ('
+        if success_prefix in output:
+            return {"name": name, "status": "connected", "checked_at": _utc_now(),
+                    "detail": output.strip()[:200]}
+        return {"name": name, "status": "failed", "checked_at": _utc_now(),
+                "detail": "connection failed (run /mcp test in omp for details)"}
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

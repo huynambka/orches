@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { cancelRun, deleteProject, getPipelineProfiles, getProject, getRun, resumeRun, startProjectRun, updateProject } from '~/lib/api';
+import { cancelRun, deleteProject, getPipelineProfiles, getProject, getRun, resumeRun, startProjectRun, updateProject,
+  getMcpServers, getProjectMcpServers, addProjectMcpServer, editProjectMcpServer, removeProjectMcpServer,
+  refreshProjectMcpServer, checkProjectMcpServer } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
+import McpServerEditor from '~/components/McpServerEditor.vue';
 import { hasDrift, profileDrift } from '~/lib/profileDiff';
-import type { AgentId, PipelineProfile, ProjectChanges, ProjectDetail, RunDetail } from '~/lib/types';
+import type { AgentId, McpCatalogEntry, McpServerConfig, PipelineProfile, ProjectChanges, ProjectDetail, ProjectMcpServer, RunDetail } from '~/lib/types';
 
 const initialDraft = (project: ProjectDetail): ProjectChanges => ({
   name: project.name, target: project.target, initial_prompt: project.initial_prompt,
@@ -25,6 +28,20 @@ const deleting = ref(false);
 const stopping = ref(false);
 const resuming = ref(false);
 
+/* ------------------------------------------------------------ MCP state */
+const mcpServers = ref<ProjectMcpServer[]>([]);
+const mcpError = ref('');
+const mcpLoading = ref(false);
+const fileRevision = ref('');
+const mcpSaving = ref(false);
+const mcpChecking = ref<string | null>(null);
+const catalogServers = ref<McpCatalogEntry[]>([]);
+const mcpEditingName = ref<string | null>(null);
+const mcpDraftName = ref('');
+const mcpDraftConfig = ref<McpServerConfig>({ command: '' });
+const mcpFormError = ref('');
+const mcpAddMode = ref<'none' | 'catalog' | 'custom'>('none');
+
 const load = async () => {
   try {
     const [current, configured] = await Promise.all([getProject(projectId), getPipelineProfiles()]);
@@ -43,6 +60,7 @@ const load = async () => {
 let timer: number | undefined;
 onMounted(() => {
   void load();
+  void loadMcp();
   timer = window.setInterval(() => void load(), 2000);
 });
 onUnmounted(() => { if (timer !== undefined) window.clearInterval(timer); });
@@ -198,6 +216,169 @@ const resume = async (rerun: string[] = []) => {
   }
 };
 
+/* --------------------------------------------------------------- MCP */
+const loadMcp = async () => {
+  mcpLoading.value = true;
+  try {
+    const [mcpData, catalog] = await Promise.all([getProjectMcpServers(projectId), getMcpServers()]);
+    mcpServers.value = mcpData.servers;
+    fileRevision.value = mcpData.file_revision;
+    catalogServers.value = catalog.servers;
+    mcpError.value = '';
+  } catch (caught) {
+    mcpError.value = caught instanceof Error ? caught.message : 'Unable to load MCP servers';
+  } finally {
+    mcpLoading.value = false;
+  }
+};
+
+const availableCatalog = computed(() =>
+  catalogServers.value.filter((c) => !mcpServers.value.some((s) => s.name === c.name)),
+);
+
+const mcpResetForm = () => {
+  mcpEditingName.value = null;
+  mcpDraftName.value = '';
+  mcpDraftConfig.value = { command: '' };
+  mcpFormError.value = '';
+  mcpAddMode.value = 'none';
+};
+
+const applyMcpResult = (result: { file_revision: string; servers: ProjectMcpServer[] }) => {
+  mcpServers.value = result.servers;
+  fileRevision.value = result.file_revision;
+};
+
+const mcpAddFromCatalog = async (name: string) => {
+  mcpSaving.value = true;
+  mcpFormError.value = '';
+  try {
+    applyMcpResult(await addProjectMcpServer(projectId, { source: 'catalog', name, if_revision: fileRevision.value }));
+    mcpAddMode.value = 'none';
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : 'Unable to add server';
+    if (msg.includes('409')) mcpError.value = 'Configuration changed externally. Reload MCP data.';
+    else mcpFormError.value = msg;
+  } finally {
+    mcpSaving.value = false;
+  }
+};
+
+const mcpAddCustom = async (event: Event) => {
+  event.preventDefault();
+  if (mcpSaving.value) return;
+  const name = mcpDraftName.value.trim();
+  if (!name) { mcpFormError.value = 'Name is required.'; return; }
+  mcpSaving.value = true;
+  mcpFormError.value = '';
+  try {
+    applyMcpResult(await addProjectMcpServer(projectId, { source: 'custom', name, config: mcpDraftConfig.value, if_revision: fileRevision.value }));
+    mcpResetForm();
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : 'Unable to add server';
+    if (msg.includes('409')) mcpError.value = 'Configuration changed externally. Reload MCP data.';
+    else mcpFormError.value = msg;
+  } finally {
+    mcpSaving.value = false;
+  }
+};
+
+const mcpStartEdit = (server: ProjectMcpServer) => {
+  mcpEditingName.value = server.name;
+  mcpDraftName.value = server.name;
+  mcpDraftConfig.value = { ...server.config };
+  mcpFormError.value = '';
+  mcpAddMode.value = 'none';
+};
+
+const mcpSaveEdit = async (event: Event) => {
+  event.preventDefault();
+  if (mcpSaving.value || !mcpEditingName.value) return;
+  mcpSaving.value = true;
+  mcpFormError.value = '';
+  try {
+    applyMcpResult(await editProjectMcpServer(projectId, mcpEditingName.value, mcpDraftConfig.value, fileRevision.value));
+    mcpResetForm();
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : 'Unable to save server';
+    if (msg.includes('409')) mcpError.value = 'Configuration changed externally. Reload MCP data.';
+    else mcpFormError.value = msg;
+  } finally {
+    mcpSaving.value = false;
+  }
+};
+
+const mcpRemove = async (server: ProjectMcpServer) => {
+  const accepted = await confirmDialog.value?.ask({
+    title: 'Remove MCP server',
+    message: `Remove "${server.name}" from this project? The catalog entry (if any) is not affected.`,
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!accepted) return;
+  mcpFormError.value = '';
+  try {
+    applyMcpResult(await removeProjectMcpServer(projectId, server.name, fileRevision.value));
+    if (mcpEditingName.value === server.name) mcpResetForm();
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : 'Unable to remove server';
+    if (msg.includes('409')) mcpError.value = 'Configuration changed externally. Reload MCP data.';
+    else mcpFormError.value = msg;
+  }
+};
+
+const mcpRefresh = async (server: ProjectMcpServer) => {
+  mcpSaving.value = true;
+  mcpFormError.value = '';
+  try {
+    applyMcpResult(await refreshProjectMcpServer(projectId, server.name, fileRevision.value));
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : 'Unable to refresh server';
+    if (msg.includes('409')) mcpError.value = 'Configuration changed externally. Reload MCP data.';
+    else mcpFormError.value = msg;
+  } finally {
+    mcpSaving.value = false;
+  }
+};
+
+const mcpCheck = async (server: ProjectMcpServer) => {
+  mcpChecking.value = server.name;
+  try {
+    const result = await checkProjectMcpServer(projectId, server.name);
+    const idx = mcpServers.value.findIndex((s) => s.name === server.name);
+    if (idx >= 0) {
+      mcpServers.value[idx] = { ...mcpServers.value[idx], status: result.status, last_checked: result.checked_at };
+    }
+  } catch (caught) {
+    mcpFormError.value = caught instanceof Error ? caught.message : 'Check failed';
+  } finally {
+    mcpChecking.value = null;
+  }
+};
+
+const mcpCheckAll = async () => {
+  for (const server of mcpServers.value) {
+    if (server.config.enabled === false) continue;
+    await mcpCheck(server);
+  }
+};
+
+const mcpStatusClass = (status: string) => {
+  if (status === 'connected') return 'mcp-status-connected';
+  if (status === 'failed') return 'mcp-status-failed';
+  if (status === 'timeout') return 'mcp-status-timeout';
+  if (status === 'disabled') return 'mcp-status-disabled';
+  return 'mcp-status-unchecked';
+};
+
+const mcpStatusLabel = (status: string) => {
+  if (status === 'connected') return 'Connected';
+  if (status === 'failed') return 'Failed';
+  if (status === 'timeout') return 'Timeout';
+  if (status === 'disabled') return 'Disabled';
+  return 'Not checked';
+};
+
 /* ------------------------------------------------------------- preview */
 const encode = (id: string) => encodeURIComponent(id);
 const previewProfile = computed(() => project.value?.pipeline_profile_definition ?? null);
@@ -350,8 +531,145 @@ const previewDependencies = computed(() => {
               <span v-if="runDisabledReason" class="inline-note" role="status">{{ runDisabledReason }}</span>
             </div>
           </form>
+          <!-- MCP servers section -->
+          <div class="mcp-section">
+            <div class="project-config-heading"><div>
+              <h2 class="page-heading">MCP servers</h2>
+              <p class="inline-note">Project-local MCP server configuration. Changes are saved to the project's <code>.omp/mcp.json</code> immediately.</p>
+            </div></div>
+            <div v-if="mcpError" class="error-state" role="alert">
+              <span>{{ mcpError }}</span>
+              <button class="control" @click="() => { mcpError = ''; void loadMcp(); }">Reload</button>
+            </div>
+            <div v-if="mcpLoading && !mcpServers.length" class="empty-state"><strong>Loading MCP servers…</strong></div>
+            <template v-else>
+              <!-- Server list -->
+              <div v-if="mcpServers.length" class="mcp-server-list">
+                <div v-for="server in mcpServers" :key="server.name" class="mcp-server-item">
+                  <div class="mcp-server-header">
+                    <span class="mono mcp-server-name">{{ server.name }}</span>
+                    <span class="mcp-source-badge">{{ server.source === 'catalog' ? 'Catalog' : 'Custom' }}</span>
+                    <span :class="`mcp-status ${mcpStatusClass(server.status)}`" :aria-label="`Status: ${mcpStatusLabel(server.status)}`">
+                      <span class="status-dot" aria-hidden="true" />
+                      {{ mcpStatusLabel(server.status) }}
+                    </span>
+                    <span v-if="server.last_checked" class="mcp-timestamp">Last check: {{ new Date(server.last_checked).toLocaleString() }}</span>
+                  </div>
+                  <div v-if="server.source === 'catalog' && server.source_missing" class="inline-note mcp-marker">⚠ Catalog entry deleted</div>
+                  <div v-if="server.update_available" class="inline-note mcp-marker">↑ Newer catalog version available</div>
+                  <div v-if="server.modified_locally" class="inline-note mcp-marker">✎ Modified locally</div>
+                  <div class="mcp-server-actions">
+                    <button class="control" type="button" :disabled="running || mcpSaving" @click="mcpStartEdit(server)">Edit</button>
+                    <button class="control" type="button" :disabled="running || mcpSaving" @click="() => void mcpRemove(server)">Remove</button>
+                    <button class="control" type="button" :disabled="mcpChecking !== null" @click="() => void mcpCheck(server)">
+                      {{ mcpChecking === server.name ? 'Checking…' : 'Check status' }}
+                    </button>
+                    <button
+                      v-if="server.source === 'catalog' && (server.update_available || server.modified_locally) && !server.source_missing"
+                      class="control"
+                      type="button"
+                      :disabled="running || mcpSaving"
+                      @click="() => void mcpRefresh(server)"
+                    >Fetch newest config</button>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty-state"><strong>No MCP servers configured</strong><span>Add servers from the catalog or create custom entries.</span></div>
+
+              <!-- Edit form -->
+              <template v-if="mcpEditingName">
+                <div class="mcp-form-section">
+                  <h3 class="page-heading">Edit "{{ mcpEditingName }}"</h3>
+                  <form class="project-form" @submit="(event) => void mcpSaveEdit(event)">
+                    <McpServerEditor
+                      v-model="mcpDraftConfig"
+                      :name="mcpDraftName"
+                      :editing="true"
+                      :disabled="mcpSaving"
+                      @update:name="mcpDraftName = $event"
+                    />
+                    <div class="project-form-actions">
+                      <button class="control control-primary" type="submit" :disabled="mcpSaving">{{ mcpSaving ? 'Saving…' : 'Save changes' }}</button>
+                      <button class="control" type="button" :disabled="mcpSaving" @click="mcpResetForm">Cancel</button>
+                    </div>
+                    <p v-if="mcpFormError" class="create-error" role="alert">{{ mcpFormError }}</p>
+                  </form>
+                </div>
+              </template>
+
+              <!-- Add actions -->
+              <div v-if="!mcpEditingName" class="mcp-add-actions">
+                <div class="mcp-add-buttons">
+                  <button class="control" type="button" :disabled="running || mcpSaving || !availableCatalog.length" @click="mcpAddMode = mcpAddMode === 'catalog' ? 'none' : 'catalog'">
+                    {{ mcpAddMode === 'catalog' ? 'Cancel' : 'Add from catalog' }}
+                  </button>
+                  <button class="control" type="button" :disabled="running || mcpSaving" @click="mcpAddMode = mcpAddMode === 'custom' ? 'none' : 'custom'; mcpResetForm()">
+                    {{ mcpAddMode === 'custom' ? 'Cancel' : 'Add custom' }}
+                  </button>
+                  <button v-if="mcpServers.length" class="control" type="button" :disabled="mcpChecking !== null" @click="() => void mcpCheckAll()">
+                    {{ mcpChecking ? 'Checking…' : 'Check all' }}
+                  </button>
+                </div>
+
+                <!-- Catalog selector -->
+                <div v-if="mcpAddMode === 'catalog'" class="mcp-form-section">
+                  <h3 class="page-heading">Add from catalog</h3>
+                  <div v-if="availableCatalog.length" class="mcp-catalog-list">
+                    <div v-for="entry in availableCatalog" :key="entry.name" class="mcp-catalog-item">
+                      <span class="mono">{{ entry.name }}</span>
+                      <span class="mcp-source-badge">{{ entry.transport }}</span>
+                      <button class="control" type="button" :disabled="mcpSaving" @click="() => void mcpAddFromCatalog(entry.name)">Add</button>
+                    </div>
+                  </div>
+                  <p v-else class="inline-note">All catalog servers are already added. <NuxtLink to="/mcp-servers">Manage catalog</NuxtLink></p>
+                  <p v-if="mcpFormError" class="create-error" role="alert">{{ mcpFormError }}</p>
+                </div>
+
+                <!-- Custom form -->
+                <div v-if="mcpAddMode === 'custom'" class="mcp-form-section">
+                  <h3 class="page-heading">Add custom server</h3>
+                  <form class="project-form" @submit="(event) => void mcpAddCustom(event)">
+                    <McpServerEditor
+                      v-model="mcpDraftConfig"
+                      :name="mcpDraftName"
+                      :editing="false"
+                      :disabled="mcpSaving"
+                      @update:name="mcpDraftName = $event"
+                    />
+                    <div class="project-form-actions">
+                      <button class="control control-primary" type="submit" :disabled="mcpSaving">{{ mcpSaving ? 'Adding…' : 'Add server' }}</button>
+                    </div>
+                    <p v-if="mcpFormError" class="create-error" role="alert">{{ mcpFormError }}</p>
+                  </form>
+                </div>
+              </div>
+            </template>
+          </div>
         </aside>
       </div>
     </template>
   </div></main>
 </template>
+
+<style scoped>
+.mcp-section { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+.mcp-server-list { display: grid; gap: 12px; }
+.mcp-server-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.mcp-server-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.mcp-server-name { font-weight: 600; }
+.mcp-source-badge { font-size: 11px; padding: 1px 6px; border-radius: var(--radius-sm); background: var(--surface-2, var(--surface)); color: var(--muted); border: 1px solid var(--border); }
+.mcp-status { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.mcp-status-connected { color: var(--success); }
+.mcp-status-failed { color: var(--error); }
+.mcp-status-timeout { color: var(--warning); }
+.mcp-status-disabled { color: var(--muted); }
+.mcp-status-unchecked { color: var(--muted); }
+.mcp-timestamp { font-size: 11px; color: var(--muted); }
+.mcp-marker { font-size: 12px; margin-top: 2px; }
+.mcp-server-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.mcp-add-actions { margin-top: 12px; }
+.mcp-add-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.mcp-form-section { margin-top: 12px; }
+.mcp-catalog-list { display: grid; gap: 6px; margin-top: 8px; }
+.mcp-catalog-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+</style>

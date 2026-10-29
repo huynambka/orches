@@ -84,6 +84,18 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
   To make this possible **`run_agent` is now nonblocking**: it returns `{"id","status":"running"}`
   and the root polls `get_status` / `read_agent_output`; worker failure/fatal marking moved into
   `PipelineController._execute`. Inbox rows cascade with the run (Resume starts empty).
+- **MCP server catalog** (`orches/project_mcp.py`, `orches/mcp_schema.json`, schema v6 `mcp_catalog` +
+  `project_mcp_sources`): central reusable server configurations (catalog CRUD in StateStore) and per-project
+  copies saved to OMP-native `<project>/.omp/mcp.json`. Catalog edits never auto-update projects; explicit
+  **Fetch newest config** per entry. Validation uses vendored OMP JSON schema via `jsonschema`; names match
+  OMP's `^[a-zA-Z0-9_.-]{1,100}$`. File mutations require `if_revision` (SHA-256) for conflict detection;
+  symlinked `.omp` or out-of-project paths rejected. `ProjectMcpService` coordinates file writes + DB
+  provenance under StateStore transaction. OMP launches now pass `--cwd <project>` instead of `--add-dir` so
+  OMP discovers `.omp/mcp.json` natively; worker workspace becomes an `--add-dir`. Built-in tool restrictions
+  unchanged (`--tools`/`--no-tools` do not set SDK `restrictToolNames`, so MCP discovery stays enabled).
+  On-demand project connectivity probe via `OmpClient.probe_mcp`: ephemeral RPC session sends `/mcp test <name>`,
+  parses `command_output`, never calls a model. UI: `/mcp-servers` catalog CRUD page (no status column),
+  project setup sidebar MCP section with source badges, status display, Check/Fetch/Add/Edit/Remove actions.
 - **Models**: `GET /api/omp-models` shells out to `omp models --json` (chat models only).
 - **Costs** (`orches/costs.py`, schema v4 `model_cost_events`): `OmpRpcSession` calls an optional
   `usage_event_handler(event, index)` for every public `message_end` / `cache_warming_end` as it

@@ -179,3 +179,10 @@ export interface ConnectionChanges {
   ip?: string | null;
   cred?: string | null;
 }
+
+export type McpServerConfig = Record<string, unknown>;
+export interface McpCatalogEntry { name: string; transport: string; endpoint: string | null; revision: number; created_at: string; updated_at: string; }
+export interface McpCatalogDetail { name: string; config: McpServerConfig; revision: number; created_at: string; updated_at: string; }
+export interface ProjectMcpServer { name: string; config: McpServerConfig; source: 'catalog' | 'custom'; catalog_name: string | null; source_revision: number | null; source_missing: boolean; update_available: boolean; modified_locally: boolean; status: string; last_checked: string | null; }
+export interface ProjectMcpList { file_revision: string; servers: ProjectMcpServer[]; }
+export interface McpCheckResult { name: string; status: string; checked_at: string | null; detail: string; }

@@ -29,6 +29,10 @@ from .project_files import (
     ensure_project_marker, read_marker, remove_owned_run, validate_project_directory,
 )
 from .state import ConnectionUseError, ProjectConflictError, StateStore
+from .project_mcp import (
+    McpConfigError, McpFileError, McpRevisionError, ProjectMcpService,
+    read_project_mcp, safe_summary, validate_name, validate_server,
+)
 
 _TERMINAL = {"completed", "failed", "blocked"}
 _LOG = logging.getLogger("orches.api")
@@ -884,5 +888,204 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if record is None:
             raise HTTPException(status_code=404, detail="connection not found")
         return JSONResponse({"cred": record["cred"]}, headers={"Cache-Control": "no-store"})
+
+    # --------------------------------------------------------- MCP catalog
+    mcp_service = ProjectMcpService(state)
+
+    @app.get("/api/mcp-servers")
+    def mcp_catalog_list(request: Request) -> dict[str, Any]:
+        _require_local(request)
+        entries = state.list_mcp_catalog()
+        result = []
+        for entry in entries:
+            config = json.loads(entry["config_json"])
+            summary = safe_summary(config)
+            result.append({
+                "name": entry["name"], "revision": entry["revision"],
+                "transport": summary["transport"], "endpoint": summary["endpoint"],
+                "created_at": entry["created_at"], "updated_at": entry["updated_at"],
+            })
+        return {"servers": result}
+
+    @app.post("/api/mcp-servers", status_code=201)
+    async def mcp_catalog_create(request: Request) -> dict[str, Any]:
+        _require_local(request)
+        payload = await _json_object(request)
+        name = payload.get("name")
+        config = payload.get("config")
+        if not isinstance(name, str) or not isinstance(config, dict):
+            raise HTTPException(status_code=400, detail="name (string) and config (object) are required")
+        try:
+            validated = validate_server(validate_name(name), config)
+        except McpConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            entry = state.create_mcp_catalog(name, validated)
+        except ProjectConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"name": entry["name"], "config": json.loads(entry["config_json"]),
+                "revision": entry["revision"], "created_at": entry["created_at"],
+                "updated_at": entry["updated_at"]}
+
+    @app.get("/api/mcp-servers/{name}")
+    def mcp_catalog_detail(name: str, request: Request) -> JSONResponse:
+        _require_local(request)
+        entry = state.get_mcp_catalog(name)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="catalog entry not found")
+        return JSONResponse(
+            {"name": entry["name"], "config": json.loads(entry["config_json"]),
+             "revision": entry["revision"], "created_at": entry["created_at"],
+             "updated_at": entry["updated_at"]},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.put("/api/mcp-servers/{name}")
+    async def mcp_catalog_update(name: str, request: Request) -> dict[str, Any]:
+        _require_local(request)
+        payload = await _json_object(request)
+        config = payload.get("config")
+        revision = payload.get("revision")
+        if not isinstance(config, dict) or not isinstance(revision, int):
+            raise HTTPException(status_code=400, detail="config (object) and revision (integer) are required")
+        try:
+            validated = validate_server(name, config)
+        except McpConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            entry = state.update_mcp_catalog(name, validated, revision)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="catalog entry not found")
+        except ProjectConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"name": entry["name"], "config": json.loads(entry["config_json"]),
+                "revision": entry["revision"], "created_at": entry["created_at"],
+                "updated_at": entry["updated_at"]}
+
+    @app.delete("/api/mcp-servers/{name}")
+    def mcp_catalog_delete(name: str, request: Request) -> dict[str, bool]:
+        _require_local(request)
+        if not state.delete_mcp_catalog(name):
+            raise HTTPException(status_code=404, detail="catalog entry not found")
+        return {"deleted": True}
+
+    # --------------------------------------------------- project MCP servers
+
+    def _project_for_mcp(project_id: str, request: Request) -> dict[str, Any]:
+        _require_local(request)
+        project = state.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        return project
+
+    def _mcp_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, McpRevisionError):
+            return HTTPException(status_code=409, detail=str(exc))
+        if isinstance(exc, McpConfigError):
+            return HTTPException(status_code=400, detail=str(exc))
+        if isinstance(exc, McpFileError):
+            return HTTPException(status_code=409, detail=str(exc))
+        if isinstance(exc, ProjectConflictError):
+            return HTTPException(status_code=409, detail=str(exc))
+        if isinstance(exc, ProjectDirectoryError):
+            return HTTPException(status_code=400, detail=str(exc))
+        return HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/api/projects/{project_id}/mcp-servers")
+    def project_mcp_list(project_id: str, request: Request) -> dict[str, Any]:
+        project = _project_for_mcp(project_id, request)
+        try:
+            return mcp_service.list(project)
+        except (McpFileError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/mcp-servers", status_code=201)
+    async def project_mcp_add(project_id: str, request: Request) -> dict[str, Any]:
+        project = _project_for_mcp(project_id, request)
+        payload = await _json_object(request)
+        source = payload.get("source")
+        if_revision = payload.get("if_revision")
+        if not isinstance(if_revision, str):
+            raise HTTPException(status_code=400, detail="if_revision (string) is required")
+        try:
+            if source == "catalog":
+                name = payload.get("name")
+                if not isinstance(name, str):
+                    raise HTTPException(status_code=400, detail="name is required for catalog source")
+                return mcp_service.add_from_catalog(project, name, if_revision)
+            elif source == "custom":
+                name = payload.get("name")
+                config = payload.get("config")
+                if not isinstance(name, str) or not isinstance(config, dict):
+                    raise HTTPException(status_code=400, detail="name and config required for custom source")
+                return mcp_service.add_custom(project, name, config, if_revision)
+            else:
+                raise HTTPException(status_code=400, detail="source must be 'catalog' or 'custom'")
+        except (McpConfigError, McpFileError, McpRevisionError, ProjectConflictError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+
+    @app.put("/api/projects/{project_id}/mcp-servers/{name}")
+    async def project_mcp_edit(project_id: str, name: str, request: Request) -> dict[str, Any]:
+        project = _project_for_mcp(project_id, request)
+        payload = await _json_object(request)
+        config = payload.get("config")
+        if_revision = payload.get("if_revision")
+        if not isinstance(config, dict) or not isinstance(if_revision, str):
+            raise HTTPException(status_code=400, detail="config (object) and if_revision (string) required")
+        try:
+            return mcp_service.edit(project, name, config, if_revision)
+        except (McpConfigError, McpFileError, McpRevisionError, ProjectConflictError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+
+    @app.delete("/api/projects/{project_id}/mcp-servers/{name}")
+    async def project_mcp_remove(project_id: str, name: str, request: Request) -> dict[str, Any]:
+        project = _project_for_mcp(project_id, request)
+        payload = await _json_object(request)
+        if_revision = payload.get("if_revision")
+        if not isinstance(if_revision, str):
+            raise HTTPException(status_code=400, detail="if_revision (string) required")
+        try:
+            return mcp_service.remove(project, name, if_revision)
+        except (McpConfigError, McpFileError, McpRevisionError, ProjectConflictError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/mcp-servers/{name}/refresh")
+    async def project_mcp_refresh(project_id: str, name: str, request: Request) -> dict[str, Any]:
+        project = _project_for_mcp(project_id, request)
+        payload = await _json_object(request)
+        if_revision = payload.get("if_revision")
+        if not isinstance(if_revision, str):
+            raise HTTPException(status_code=400, detail="if_revision (string) required")
+        try:
+            return mcp_service.refresh(project, name, if_revision)
+        except (McpConfigError, McpFileError, McpRevisionError, ProjectConflictError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+
+    from .omp import OmpClient as _OmpClient
+    _omp_client: _OmpClient | None = None
+    try:
+        _omp_client = _OmpClient(config.omp_bin)
+    except FileNotFoundError:
+        pass
+
+    @app.post("/api/projects/{project_id}/mcp-servers/{name}/check")
+    async def project_mcp_check(project_id: str, name: str, request: Request) -> dict[str, Any]:
+        _require_local(request)
+        project = _project_for_mcp(project_id, request)
+        try:
+            data, _ = read_project_mcp(project)
+        except (McpFileError, ProjectDirectoryError) as exc:
+            raise _mcp_error(exc) from exc
+        servers = data.get("mcpServers", {})
+        if name not in servers:
+            raise HTTPException(status_code=404, detail=f"server {name!r} not found in project")
+        server_config = servers[name]
+        if isinstance(server_config, dict) and server_config.get("enabled") is False:
+            return {"name": name, "status": "disabled", "checked_at": None, "detail": "server is disabled"}
+        if _omp_client is None:
+            raise HTTPException(status_code=503, detail="omp binary is not available")
+        project_dir = Path(project["project_directory"])
+        assert_project_marker(project_dir, project["project_id"])
+        return await _omp_client.probe_mcp(project_dir, name)
 
     return app

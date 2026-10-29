@@ -1,6 +1,7 @@
 import type {
   AgentId, AgentInvocation, AgentLayout, AgentPosition, Connection, ConnectionChanges, CostRow, LogPage,
-  NewConnection, NewProject, PipelineProfile, ProjectChanges, ProjectDetail, ProjectSummary,
+  McpCatalogDetail, McpCatalogEntry, McpCheckResult, McpServerConfig, NewConnection, NewProject,
+  PipelineProfile, ProjectChanges, ProjectDetail, ProjectMcpList, ProjectSummary,
   RunDetail, StartedRun,
 } from './types';
 
@@ -86,3 +87,28 @@ export const deleteConnection = (id: string) =>
   request<{ deleted: boolean }>(`/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const revealConnectionCredential = (id: string, signal?: AbortSignal) =>
   request<{ cred: string | null }>(`/connections/${encodeURIComponent(id)}/cred`, { signal });
+
+// MCP catalog
+export const getMcpServers = () => request<{ servers: McpCatalogEntry[] }>('/mcp-servers');
+export const createMcpServer = (name: string, config: McpServerConfig) =>
+  request<McpCatalogDetail>('/mcp-servers', jsonMutation('POST', { name, config }));
+export const getMcpServer = (name: string) =>
+  request<McpCatalogDetail>(`/mcp-servers/${encodeURIComponent(name)}`);
+export const updateMcpServer = (name: string, config: McpServerConfig, revision: number) =>
+  request<McpCatalogDetail>(`/mcp-servers/${encodeURIComponent(name)}`, jsonMutation('PUT', { config, revision }));
+export const deleteMcpServer = (name: string) =>
+  request<{ deleted: boolean }>(`/mcp-servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+
+// Project MCP
+export const getProjectMcpServers = (projectId: string) =>
+  request<ProjectMcpList>(`/projects/${encodeURIComponent(projectId)}/mcp-servers`);
+export const addProjectMcpServer = (projectId: string, body: { source: string; name: string; config?: McpServerConfig; if_revision: string }) =>
+  request<ProjectMcpList>(`/projects/${encodeURIComponent(projectId)}/mcp-servers`, jsonMutation('POST', body));
+export const editProjectMcpServer = (projectId: string, name: string, config: McpServerConfig, if_revision: string) =>
+  request<ProjectMcpList>(`/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(name)}`, jsonMutation('PUT', { config, if_revision }));
+export const removeProjectMcpServer = (projectId: string, name: string, if_revision: string) =>
+  request<ProjectMcpList>(`/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(name)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ if_revision }) });
+export const refreshProjectMcpServer = (projectId: string, name: string, if_revision: string) =>
+  request<ProjectMcpList>(`/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(name)}/refresh`, jsonMutation('POST', { if_revision }));
+export const checkProjectMcpServer = (projectId: string, name: string) =>
+  request<McpCheckResult>(`/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(name)}/check`, jsonMutation('POST', {}));
