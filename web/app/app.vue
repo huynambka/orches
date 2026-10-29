@@ -69,7 +69,7 @@ const crumbs = computed(() => {
   <NuxtPage v-if="editorMode" />
   <div v-else :class="`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`">
     <aside class="sidebar">
-      <NuxtLink to="/" class="brand"><span class="brand-mark">∞</span><span>ORCHES</span></NuxtLink>
+      <NuxtLink to="/" class="brand"><span class="brand-mark"><BrandMark /></span><span>ORCHES</span></NuxtLink>
       <div class="nav-label">Workspace</div>
       <MainNav variant="sidebar" :collapsed="collapsed" />
       <div class="sidebar-footer"><strong>Local workspace</strong>Design agent pipelines · run them on your folders</div>
@@ -125,7 +125,7 @@ const crumbs = computed(() => {
     <dialog ref="drawer" class="nav-drawer" aria-label="Navigation" @click.self="closeDrawer">
       <div class="nav-drawer-panel">
         <div class="nav-drawer-head">
-          <NuxtLink to="/" class="brand"><span class="brand-mark">∞</span><span>ORCHES</span></NuxtLink>
+          <NuxtLink to="/" class="brand"><span class="brand-mark"><BrandMark /></span><span>ORCHES</span></NuxtLink>
           <button class="icon-button" type="button" aria-label="Close navigation" @click="closeDrawer">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
