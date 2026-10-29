@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { createPipelineProfile, deletePipelineProfile, getPipelineProfile, getPipelineProfiles } from '~/lib/api';
+import { createPipelineProfile, deletePipelineProfile, getPipelineProfile, getPipelineProfiles, updatePipelineProfile } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
+import { exportFilename, exportProfile, parseProfileExport } from '~/lib/profileTransfer';
 import type { PipelineProfile } from '~/lib/types';
 
 const route = useRoute();
@@ -103,6 +104,57 @@ const remove = async (profile: PipelineProfile) => {
   }
 };
 
+const exportOne = (profile: PipelineProfile) => {
+  const blob = new Blob([exportProfile(profile)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = exportFilename(profile);
+  anchor.click();
+  URL.revokeObjectURL(url);
+};
+
+const importInput = ref<HTMLInputElement | null>(null);
+const importing = ref(false);
+const importError = ref('');
+
+const openImport = () => {
+  importError.value = '';
+  importInput.value?.click();
+};
+
+const importFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file || importing.value) return;
+  importing.value = true;
+  importError.value = '';
+  let createdId = '';
+  try {
+    const definition = parseProfileExport(await file.text());
+    const created = await createPipelineProfile(definition.name);
+    createdId = created.id;
+    const saved = await updatePipelineProfile(created.id, {
+      id: created.id,
+      name: definition.name,
+      steps: definition.steps,
+      root_prompt: definition.root_prompt,
+      root_model: definition.root_model,
+      root_thinking: definition.root_thinking as PipelineProfile['root_thinking'],
+      revision: created.revision ?? 1,
+    });
+    profiles.value = [...profiles.value, saved];
+    void openEditor(saved.id);
+  } catch (caught) {
+    // Roll the empty shell back so a rejected file leaves no draft behind.
+    if (createdId) await deletePipelineProfile(createdId).catch(() => undefined);
+    importError.value = `Import failed: ${caught instanceof Error ? caught.message : 'unreadable file'}`;
+  } finally {
+    importing.value = false;
+  }
+};
+
 const onSaved = (profile: PipelineProfile) => {
   profiles.value = profiles.value.map((item) => (item.id === profile.id ? profile : item));
   editing.value = profile;
@@ -160,7 +212,13 @@ const onSaved = (profile: PipelineProfile) => {
         <div class="panel-toolbar">
           <strong>{{ loading ? 'Loading…' : `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}` }}</strong>
           <span class="toolbar-spacer" />
+          <button class="control" type="button" :disabled="importing" @click="openImport">{{ importing ? 'Importing…' : 'Import' }}</button>
           <button class="control" @click="load">Refresh</button>
+          <input ref="importInput" type="file" accept="application/json,.json" class="sr-only" aria-label="Import profile file" @change="(event) => void importFile(event)">
+        </div>
+        <div v-if="importError" class="error-state" role="alert">
+          <span>{{ importError }}</span>
+          <button class="control" type="button" @click="importError = ''">Dismiss</button>
         </div>
         <div v-if="profiles.length === 0 && !loading" class="empty-state">
           <strong>No profiles</strong>
@@ -184,6 +242,7 @@ const onSaved = (profile: PipelineProfile) => {
             <span v-else class="inline-note">No agents yet — open the editor to add some.</span>
             <div class="profile-card-actions">
               <button class="control control-primary" type="button" @click="() => void openEditor(profile.id)">Edit</button>
+              <button class="control" type="button" @click="() => exportOne(profile)">Export</button>
               <button class="control" type="button" @click="remove(profile)">Delete</button>
             </div>
           </article>

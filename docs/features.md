@@ -9,6 +9,9 @@
 - Fixed root orchestrator node with its own model, effort and appended prompt.
 - Client-side validation mirroring the backend limits; optimistic revisioned saves (409 on
   stale), dirty guards on navigation.
+- Import/Export: per-profile **Export** downloads a portable `*.orches-profile.json`
+  (definition only — no ids/revisions); **Import** creates a new profile from such a file
+  with freshly generated node ids (dependencies remapped), rolling back on invalid files.
 - REST: `GET/POST /api/pipeline-profiles`, `GET/PUT/DELETE /api/pipeline-profiles/{id}`.
 
 ## Projects
