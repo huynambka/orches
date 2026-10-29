@@ -59,12 +59,17 @@ The web dev server proxies `/api/*` to `http://127.0.0.1:8000`; override with
 
 Windows one-liner: `.\start-monitor.ps1` opens both in separate PowerShell windows, waits
 for the API's `/openapi.json`, then opens the browser. Options: `-ApiPort`, `-WebPort`,
-`-Config <path>`, `-NoBrowser`.
+`-Config <path>`, `-NoBrowser`, `-ApiOnly`, `-WebOnly`.
 
 Linux/macOS one-liner: `./start-monitor.sh` runs both as children of one terminal
 (logs in `.orches/logs/api.log` and `web.log`), waits for readiness, opens the browser
 via `xdg-open` when a display is available, and stops both on Ctrl+C. Options:
-`--api-port N`, `--web-port N`, `--config <path>`, `--no-browser`.
+`--api-port N`, `--web-port N`, `--config <path>`, `--no-browser`, `--api-only`,
+`--web-only`.
+
+`--web-only` / `-WebOnly` starts just the web client and proxies to `--api-port`
+(a warning is printed if nothing is listening there yet); `--api-only` / `-ApiOnly`
+starts just the backend — useful when restarting one side after a code change.
 
 Restart the API after pulling backend changes: schema upgrades run at startup, and run
 tasks live inside the API process (runs started by a previous process are marked failed
