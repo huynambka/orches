@@ -41,12 +41,37 @@ approval_mode = "yolo"
 Relative paths resolve against the repository root. A profile's `root_model` /
 `root_thinking` override `[roles.root]` for that profile.
 
+## Authentication
+
+The API requires a single administrator password from the backend environment:
+
+```text
+ORCHES_ADMIN_PASSWORD=<at least 16 characters>   # required; the API refuses to start without it
+ORCHES_WEB_ORIGIN=http://localhost:3000          # exact frontend origin allowed by CORS (default shown)
+```
+
+The web client shows a login page; a successful login stores a bearer token in that
+tab's `sessionStorage` (12-hour expiry). Everything except `/api/health` and
+`/api/auth/login` answers 401 without a valid `Authorization: Bearer` header —
+including OpenAPI/docs, which are disabled. Restarting the API (or changing the
+password) revokes all sessions; **Log out** revokes the current one. Session state is
+in-process: run a single API process (the default), not multiple workers.
+
+Separate hosts (browser calls the backend directly): set
+`NUXT_PUBLIC_API_BASE_URL=https://<backend-host>` for the web client and
+`ORCHES_WEB_ORIGIN=https://<frontend-origin>` for the API. The base URL must be a bare
+https origin (http is accepted only for loopback development); terminate TLS for the
+backend at a reverse proxy — passwords and bearer tokens must never cross the network
+over plain HTTP. The password belongs to the API host only; never set it in the
+frontend environment.
+
 ## Start
 
 Two terminals:
 
 ```text
-orches api --host 127.0.0.1 --port 8000      # or: python -m orches api ...
+ORCHES_ADMIN_PASSWORD=<secret> orches api --host 127.0.0.1 --port 8000
+# PowerShell: $env:ORCHES_ADMIN_PASSWORD='<secret>'; python -m orches api ...
 ```
 
 ```text
@@ -58,8 +83,10 @@ The web dev server proxies `/api/*` to `http://127.0.0.1:8000`; override with
 `NUXT_API_PROXY_URL=http://127.0.0.1:<port>`.
 
 Windows one-liner: `.\start-monitor.ps1` opens both in separate PowerShell windows, waits
-for the API's `/openapi.json`, then opens the browser. Options: `-ApiPort`, `-WebPort`,
-`-Config <path>`, `-NoBrowser`, `-ApiOnly`, `-WebOnly`.
+for the API's `/api/health` (and that it reports the authenticated Orches service), then
+opens the browser. Options: `-ApiPort`, `-WebPort`,
+`-Config <path>`, `-NoBrowser`, `-ApiOnly`, `-WebOnly`. Set `ORCHES_ADMIN_PASSWORD`
+before launching; both launchers pass it to the API child only.
 
 Linux/macOS one-liner: `./start-monitor.sh` runs both as children of one terminal
 (logs in `.orches/logs/api.log` and `web.log`), waits for readiness, opens the browser
@@ -90,7 +117,7 @@ them or chat with their agents (those need the API process that owns the session
 ## Tests and checks
 
 ```text
-python -m unittest discover -s tests             # backend (70 tests)
+python -m unittest discover -s tests             # backend (131 tests)
 cd web
 npm test                                         # vitest
 npm run lint

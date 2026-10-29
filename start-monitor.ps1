@@ -49,24 +49,24 @@ if ($startApi) {
         -WorkingDirectory $repo `
         -ArgumentList @('-NoExit', '-Command', $apiCommand) | Out-Null
 
-    $schema = $null
+    $health = $null
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         try {
-            $schema = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/openapi.json" -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/api/health" -TimeoutSec 2
             break
         } catch {
             Start-Sleep -Milliseconds 250
         }
     }
-    if (-not $schema) {
+    if (-not $health) {
         throw "API did not start on port $ApiPort. Check the API PowerShell window before starting the web client."
     }
-    if (-not $schema.paths.'/api/projects'.post) {
-        throw "API on port $ApiPort is outdated: POST /api/projects is missing. Close the old API window and restart the monitor."
+    if ($health.service -ne 'orches' -or $health.authentication -ne 'required') {
+        throw "API on port $ApiPort is outdated: expected the authenticated Orches health response. Close the old API window and restart the monitor."
     }
 } elseif ($startWeb) {
     try {
-        Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/openapi.json" -TimeoutSec 2 | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/api/health" -TimeoutSec 2 | Out-Null
     } catch {
         Write-Warning "No API responding on http://127.0.0.1:$ApiPort yet; the web client will proxy there once it starts."
     }
@@ -76,7 +76,8 @@ if ($startWeb) {
     # NUXT_IGNORE_LOCK: the port is pinned with --strictPort, so Nuxt's
     # same-directory instance lock (e.g. a stale lock after a crash) must not
     # block this launch.
-    $webCommand = "`$env:NUXT_API_PROXY_URL='http://127.0.0.1:$ApiPort'; `$env:NUXT_IGNORE_LOCK='1'; npm run dev -- --host=127.0.0.1 --port=$WebPort --strictPort"
+    # The admin secret belongs to the API process only; never hand it to Nuxt.
+    $webCommand = "`$env:ORCHES_ADMIN_PASSWORD=`$null; `$env:NUXT_API_PROXY_URL='http://127.0.0.1:$ApiPort'; `$env:NUXT_IGNORE_LOCK='1'; npm run dev -- --host=127.0.0.1 --port=$WebPort --strictPort"
     Start-Process powershell.exe `
         -WorkingDirectory (Join-Path $repo 'web') `
         -ArgumentList @('-NoExit', '-Command', $webCommand) | Out-Null

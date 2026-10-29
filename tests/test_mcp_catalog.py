@@ -268,6 +268,8 @@ class ApiCatalogTest(unittest.TestCase):
     """Test the catalog and project MCP API routes end-to-end."""
 
     def setUp(self) -> None:
+        from test_auth import install_admin_password, login
+        install_admin_password(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -279,6 +281,7 @@ class ApiCatalogTest(unittest.TestCase):
         app = create_app(cfg)
         from starlette.testclient import TestClient
         self.client = TestClient(app)
+        login(self.client)
         self.root = root
 
     def test_catalog_crud(self) -> None:

@@ -15,6 +15,8 @@ from orches.orchestrator import PipelineController
 from orches.pipeline_profiles import PipelineProfile, PipelineStep
 from orches.state import SCHEMA_VERSION, StateStore
 
+from test_auth import install_admin_password, login
+
 A, B, C, D = ("node_" + ch * 32 for ch in "abcd")
 
 
@@ -222,6 +224,7 @@ class ResumeApiTest(unittest.TestCase):
         from orches.profile_store import ProfileStore
         from orches.project_files import ensure_project_marker
 
+        install_admin_password(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -245,6 +248,7 @@ class ResumeApiTest(unittest.TestCase):
         )
         ensure_project_marker(directory, self.project_id)
         self.client = TestClient(create_app(config))
+        login(self.client)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 

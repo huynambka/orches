@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import math
@@ -20,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .agent_runtime import ActiveSessionRegistry
 from .artifacts import ArtifactStore
+from .auth import AdminSessions, TOKEN_TTL_SECONDS
 from .config import AppConfig, load_config
 from .models import AgentRole
 from .pipeline_profiles import profile_from_dict, profile_from_record
@@ -314,16 +314,6 @@ def _safe_connection(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _require_local(request: Request) -> None:
-    client = request.client.host if request.client else None
-    try:
-        is_local = ipaddress.ip_address(client or "").is_loopback
-    except ValueError:
-        is_local = client in {"localhost", "testclient"}
-    if not is_local:
-        raise HTTPException(status_code=403, detail="this route is local-only")
-
-
 def create_app(config: AppConfig | None = None) -> FastAPI:
     config = config or load_config(Path.cwd())
     profile_store = ProfileStore(config.profiles_db)
@@ -361,19 +351,75 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
 
-    app = FastAPI(title="Orches Monitor", lifespan=lifespan)
+    password = os.getenv("ORCHES_ADMIN_PASSWORD", "")
+    admin = AdminSessions(password)  # raises WeakPasswordError before the server binds
+    # No public schema or docs: the API surface is private behind bearer auth.
+    app = FastAPI(title="Orches Monitor", lifespan=lifespan,
+                  openapi_url=None, docs_url=None, redoc_url=None)
+
+    auth_exempt = {("GET", "/api/health"), ("HEAD", "/api/health"), ("POST", "/api/auth/login")}
+
+    @app.middleware("http")
+    async def _authenticate(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if request.method == "OPTIONS" or (request.method, request.url.path) in auth_exempt:
+            return await call_next(request)
+        if not admin.authenticate(request.headers.get("authorization")):
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+        return await call_next(request)
+
+    # CORS is registered after the auth middleware so it wraps it (outermost):
+    # 401/429 responses to the configured frontend origin keep CORS headers.
     origin = os.getenv("ORCHES_WEB_ORIGIN", "http://localhost:3000")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[origin],
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["*"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )
+
+    no_store = {"Cache-Control": "no-store"}
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "service": "orches", "authentication": "required"}
+
+    @app.post("/api/auth/login")
+    async def auth_login(request: Request) -> JSONResponse:
+        peer = request.client.host if request.client else "unknown"
+        if admin.login_blocked(peer):
+            return JSONResponse({"detail": "too many login attempts"}, status_code=429, headers=no_store)
+        body = await request.body()
+        if len(body) > 4096:
+            return JSONResponse({"detail": "request body too large"}, status_code=413, headers=no_store)
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            payload = None
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"password"}
+            or not isinstance(payload.get("password"), str)
+        ):
+            return JSONResponse({"detail": "body must contain only a password string"},
+                                status_code=400, headers=no_store)
+        token = admin.login(payload["password"], peer)
+        if token is None:
+            return JSONResponse({"detail": "invalid credentials"}, status_code=401, headers=no_store)
+        return JSONResponse(
+            {"access_token": token, "token_type": "bearer", "expires_in": TOKEN_TTL_SECONDS},
+            headers=no_store,
+        )
+
+    @app.get("/api/auth/session")
+    def auth_session() -> JSONResponse:
+        # The auth middleware already validated the bearer token.
+        return JSONResponse({"authenticated": True}, headers=no_store)
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request) -> JSONResponse:
+        admin.revoke(request.headers.get("authorization"))
+        return JSONResponse({"logged_out": True}, headers=no_store)
 
     @app.get("/api/projects")
     def projects() -> dict[str, Any]:
@@ -389,7 +435,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/pipeline-profiles", status_code=201)
     async def create_pipeline_profile(request: Request) -> dict[str, Any]:
-        _require_local(request)
         payload = await _json_object(request)
         if set(payload) != {"name"} or not isinstance(payload["name"], str) or not payload["name"].strip():
             raise HTTPException(status_code=400, detail="body must contain only a nonempty name")
@@ -409,7 +454,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.put("/api/pipeline-profiles/{profile_id}")
     async def update_pipeline_profile(profile_id: str, request: Request) -> dict[str, Any]:
-        _require_local(request)
         payload = await _json_object(request)
         if set(payload) - {"root_prompt", "root_model", "root_thinking"} != {"name", "steps", "revision"}:
             raise HTTPException(
@@ -438,8 +482,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.delete("/api/pipeline-profiles/{profile_id}")
-    async def delete_pipeline_profile(profile_id: str, request: Request) -> dict[str, bool]:
-        _require_local(request)
+    async def delete_pipeline_profile(profile_id: str) -> dict[str, bool]:
         if profile_store.get(profile_id) is None:
             raise HTTPException(status_code=404, detail="pipeline profile not found")
         if any(item.get("pipeline_profile") == profile_id for item in state.list_projects()):
@@ -449,15 +492,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/omp-models")
-    async def omp_models(request: Request) -> dict[str, Any]:
-        _require_local(request)
-
+    async def omp_models() -> dict[str, Any]:
         def load_models() -> list[dict[str, str]]:
+            child_env = os.environ.copy()
+            child_env.pop("ORCHES_ADMIN_PASSWORD", None)  # never inherit the admin secret
             try:
                 process = subprocess.Popen(
                     [config.omp_bin, "models", "--json"],
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, env=child_env,
                 )
                 try:
                     output = process.stdout.read(8 * 1024 * 1024 + 1) if process.stdout else b""
@@ -682,7 +725,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         {"rerun": [node_id, ...]} (optional) forces those workers and every
         dependent to execute again as well.
         """
-        _require_local(request)
         payload = await _json_object(request)
         if set(payload) - {"rerun"}:
             raise HTTPException(status_code=400, detail="body may contain only rerun")
@@ -747,8 +789,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         }
 
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
-    async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
-        _require_local(request)
+    async def cancel_run(run_id: str) -> dict[str, str]:
         run = state.get_run(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="run not found")
@@ -844,13 +885,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         )
 
     @app.get("/api/connections")
-    def connections(request: Request) -> dict[str, Any]:
-        _require_local(request)
+    def connections() -> dict[str, Any]:
         return {"connections": [_safe_connection(item) for item in state.list_connections()]}
 
     @app.post("/api/connections", status_code=201)
     async def create_connection(request: Request) -> dict[str, Any]:
-        _require_local(request)
         settings = _connection_settings(await _json_object(request), creating=True)
         record = state.create_connection(
             name=settings["name"], os=settings["os"],
@@ -860,7 +899,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.patch("/api/connections/{connection_id}")
     async def update_connection(connection_id: str, request: Request) -> dict[str, Any]:
-        _require_local(request)
         settings = _connection_settings(await _json_object(request), creating=False)
         try:
             record = state.update_connection(connection_id, **settings)
@@ -871,8 +909,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return _safe_connection(record)
 
     @app.delete("/api/connections/{connection_id}")
-    def delete_connection(connection_id: str, request: Request) -> dict[str, bool]:
-        _require_local(request)
+    def delete_connection(connection_id: str) -> dict[str, bool]:
         try:
             deleted = state.delete_connection(connection_id)
         except ConnectionUseError as exc:
@@ -882,8 +919,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/connections/{connection_id}/cred")
-    def reveal_connection_credential(connection_id: str, request: Request) -> JSONResponse:
-        _require_local(request)
+    def reveal_connection_credential(connection_id: str) -> JSONResponse:
         record = state.get_connection(connection_id)
         if record is None:
             raise HTTPException(status_code=404, detail="connection not found")
@@ -893,8 +929,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     mcp_service = ProjectMcpService(state)
 
     @app.get("/api/mcp-servers")
-    def mcp_catalog_list(request: Request) -> dict[str, Any]:
-        _require_local(request)
+    def mcp_catalog_list() -> dict[str, Any]:
         entries = state.list_mcp_catalog()
         result = []
         for entry in entries:
@@ -909,7 +944,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/mcp-servers", status_code=201)
     async def mcp_catalog_create(request: Request) -> dict[str, Any]:
-        _require_local(request)
         payload = await _json_object(request)
         name = payload.get("name")
         config = payload.get("config")
@@ -928,8 +962,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 "updated_at": entry["updated_at"]}
 
     @app.get("/api/mcp-servers/{name}")
-    def mcp_catalog_detail(name: str, request: Request) -> JSONResponse:
-        _require_local(request)
+    def mcp_catalog_detail(name: str) -> JSONResponse:
         entry = state.get_mcp_catalog(name)
         if entry is None:
             raise HTTPException(status_code=404, detail="catalog entry not found")
@@ -942,7 +975,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.put("/api/mcp-servers/{name}")
     async def mcp_catalog_update(name: str, request: Request) -> dict[str, Any]:
-        _require_local(request)
         payload = await _json_object(request)
         config = payload.get("config")
         revision = payload.get("revision")
@@ -963,16 +995,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 "updated_at": entry["updated_at"]}
 
     @app.delete("/api/mcp-servers/{name}")
-    def mcp_catalog_delete(name: str, request: Request) -> dict[str, bool]:
-        _require_local(request)
+    def mcp_catalog_delete(name: str) -> dict[str, bool]:
         if not state.delete_mcp_catalog(name):
             raise HTTPException(status_code=404, detail="catalog entry not found")
         return {"deleted": True}
 
     # --------------------------------------------------- project MCP servers
 
-    def _project_for_mcp(project_id: str, request: Request) -> dict[str, Any]:
-        _require_local(request)
+    def _project_for_mcp(project_id: str) -> dict[str, Any]:
         project = state.get_project(project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="project not found")
@@ -992,8 +1022,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return HTTPException(status_code=500, detail=str(exc))
 
     @app.get("/api/projects/{project_id}/mcp-servers")
-    def project_mcp_list(project_id: str, request: Request) -> dict[str, Any]:
-        project = _project_for_mcp(project_id, request)
+    def project_mcp_list(project_id: str) -> dict[str, Any]:
+        project = _project_for_mcp(project_id)
         try:
             return mcp_service.list(project)
         except (McpFileError, ProjectDirectoryError) as exc:
@@ -1001,7 +1031,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/projects/{project_id}/mcp-servers", status_code=201)
     async def project_mcp_add(project_id: str, request: Request) -> dict[str, Any]:
-        project = _project_for_mcp(project_id, request)
+        project = _project_for_mcp(project_id)
         payload = await _json_object(request)
         source = payload.get("source")
         if_revision = payload.get("if_revision")
@@ -1026,7 +1056,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.put("/api/projects/{project_id}/mcp-servers/{name}")
     async def project_mcp_edit(project_id: str, name: str, request: Request) -> dict[str, Any]:
-        project = _project_for_mcp(project_id, request)
+        project = _project_for_mcp(project_id)
         payload = await _json_object(request)
         config = payload.get("config")
         if_revision = payload.get("if_revision")
@@ -1039,7 +1069,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.delete("/api/projects/{project_id}/mcp-servers/{name}")
     async def project_mcp_remove(project_id: str, name: str, request: Request) -> dict[str, Any]:
-        project = _project_for_mcp(project_id, request)
+        project = _project_for_mcp(project_id)
         payload = await _json_object(request)
         if_revision = payload.get("if_revision")
         if not isinstance(if_revision, str):
@@ -1051,7 +1081,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/projects/{project_id}/mcp-servers/{name}/refresh")
     async def project_mcp_refresh(project_id: str, name: str, request: Request) -> dict[str, Any]:
-        project = _project_for_mcp(project_id, request)
+        project = _project_for_mcp(project_id)
         payload = await _json_object(request)
         if_revision = payload.get("if_revision")
         if not isinstance(if_revision, str):
@@ -1069,9 +1099,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         pass
 
     @app.post("/api/projects/{project_id}/mcp-servers/{name}/check")
-    async def project_mcp_check(project_id: str, name: str, request: Request) -> dict[str, Any]:
-        _require_local(request)
-        project = _project_for_mcp(project_id, request)
+    async def project_mcp_check(project_id: str, name: str) -> dict[str, Any]:
+        project = _project_for_mcp(project_id)
         try:
             data, _ = read_project_mcp(project)
         except (McpFileError, ProjectDirectoryError) as exc:

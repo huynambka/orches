@@ -5,12 +5,61 @@ import type {
   RunDetail, StartedRun,
 } from './types';
 
+const TOKEN_KEY = 'orches-admin-token';
+
+// '' keeps same-origin '/api' (Nuxt dev proxy); configureApiBaseUrl switches to
+// a validated remote origin for the direct browser->backend deployment.
+let apiBase = '';
+let onUnauthorized: (() => void) | null = null;
+
+const LOOPBACK_HOSTS: Record<string, true> = { '127.0.0.1': true, localhost: true, '[::1]': true, '::1': true };
+
+/** Accept a bare https origin, or an http loopback origin for local development. */
+export function configureApiBaseUrl(raw: string): void {
+  if (!raw) {
+    apiBase = '';
+    return;
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Invalid API base URL: ${raw}`);
+  }
+  const loopback = LOOPBACK_HOSTS[url.hostname] === true;
+  const bare = !url.username && !url.password && (url.pathname === '/' || url.pathname === '') && !url.search && !url.hash;
+  if (!bare || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) {
+    throw new Error('API base URL must be a bare https origin (or an http loopback origin for local development)');
+  }
+  apiBase = url.origin;
+}
+
+/** Called when a protected request answers 401; the app redirects to login. */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+const storage = (): Storage | null => (typeof sessionStorage === 'undefined' ? null : sessionStorage);
+export const getToken = (): string | null => storage()?.getItem(TOKEN_KEY) ?? null;
+export const clearToken = (): void => storage()?.removeItem(TOKEN_KEY);
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${apiBase}/api${path}`, {
     ...init,
-    headers: { Accept: 'application/json', ...init?.headers },
+    headers,
     cache: 'no-store',
   });
+  if (response.status === 401 && !path.startsWith('/auth/login')) {
+    // Expired or revoked session: drop the stale token and return to login.
+    clearToken();
+    onUnauthorized?.();
+  }
   if (!response.ok) {
     let detail = 'Request failed';
     try {
@@ -29,6 +78,21 @@ const jsonMutation = (method: 'POST' | 'PUT' | 'PATCH', body: object): RequestIn
   body: JSON.stringify(body),
 });
 
+
+// Authentication
+export interface LoginResult { access_token: string; token_type: 'bearer'; expires_in: number }
+export const login = async (password: string): Promise<void> => {
+  const result = await request<LoginResult>('/auth/login', jsonMutation('POST', { password }));
+  storage()?.setItem(TOKEN_KEY, result.access_token);
+};
+export const getAuthSession = () => request<{ authenticated: boolean }>('/auth/session');
+export const logout = async (): Promise<void> => {
+  try {
+    await request<{ logged_out: boolean }>('/auth/logout', { method: 'POST' });
+  } finally {
+    clearToken();
+  }
+};
 export const getHealth = () => request<{ status: string }>('/health');
 export const getProjects = () => request<{ projects: ProjectSummary[] }>('/projects');
 /** Lifetime project × model usage rows; sum them client-side for project and model totals. */

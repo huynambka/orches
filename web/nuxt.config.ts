@@ -6,6 +6,11 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // Overridable with NUXT_API_PROXY_URL; the server route validates it per request.
     apiProxyUrl: 'http://127.0.0.1:8000',
+    public: {
+      // Direct browser->backend origin (NUXT_PUBLIC_API_BASE_URL). Empty keeps
+      // the same-origin /api proxy for local development.
+      apiBaseUrl: '',
+    },
   },
   css: [
     '@vue-flow/core/dist/style.css',

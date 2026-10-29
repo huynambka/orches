@@ -21,6 +21,7 @@ want to change the root orchestrator model, storage paths, or the `omp` binary.
 
 ```text
 python -m pip install -e ".[web]"
+set ORCHES_ADMIN_PASSWORD=<at least 16 characters>   # required; see docs/running.md
 orches api --host 127.0.0.1 --port 8000
 ```
 
@@ -32,7 +33,7 @@ npm install
 npm run dev
 ```
 
-The client is available at `http://localhost:3000`.
+The client is available at `http://localhost:3000`; sign in with the admin password.
 
 1. **Profiles** — create a profile, add agent nodes, drag them, connect dependencies, and select a
    node to set its name, model and prompt. The model list comes from `omp models --json`; if OMP

@@ -451,6 +451,8 @@ class OmpClient:
             for item in context_files: args.append("@" + str(item))
         if extra_args: args.extend(extra_args)
         env = os.environ.copy(); env.update({str(k): str(v) for k, v in (extra_env or {}).items()})
+        # The admin API secret must never reach agent subprocesses.
+        env.pop("ORCHES_ADMIN_PASSWORD", None)
         if require_mcp_ready: env["OMP_MCP_REQUIRE_READY"] = "1"
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
         # Single RPC events (e.g. whole-file write echoes) can far exceed asyncio's
@@ -509,6 +511,7 @@ class OmpClient:
             "--no-skills", "--no-rules", "--no-lsp", "--no-pty",
         ]
         env = os.environ.copy()
+        env.pop("ORCHES_ADMIN_PASSWORD", None)
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
         proc: asyncio.subprocess.Process | None = None
         try:

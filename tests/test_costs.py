@@ -21,6 +21,7 @@ from orches.omp import OmpClient
 from orches.pipeline_profiles import PipelineStep
 from orches.state import StateStore
 
+from test_auth import install_admin_password, login
 from test_connection_tools import make_running_run, start_running_invocation
 
 NODE = "node_" + "a" * 32
@@ -221,6 +222,7 @@ class CostApiTest(unittest.TestCase):
         from orches.api import create_app
         from orches.config import AppConfig
 
+        install_admin_password(self)
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         config = AppConfig(
@@ -239,6 +241,7 @@ class CostApiTest(unittest.TestCase):
         self.state.carry_over_invocations(self.run_id, [{**self.state.list_invocations(self.run_id)[0], "role": "node_" + "b" * 32}])
         # The API process marks interrupted API runs failed at startup; the ledger is unaffected.
         self.client = TestClient(create_app(config))
+        login(self.client)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.addCleanup(self.tmp.cleanup)

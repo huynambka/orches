@@ -3,7 +3,7 @@ import { VueFlow, useVueFlow, ConnectionMode, MarkerType, type Connection, type 
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { MiniMap } from '@vue-flow/minimap';
-import { getOmpModels, getPipelineProfile, updatePipelineProfile, type OmpModel } from '~/lib/api';
+import { getOmpModels, getPipelineProfile, logout, updatePipelineProfile, type OmpModel } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
 import { anchorSides, connectSteps, connectionError, insertStepBetween, layoutProfileSteps, POSITION_BOUND, removeDependency, removeStep, validateProfileDraft } from '~/lib/profileGraph';
 import { DEFAULT_THINKING, THINKING_LEVELS, type PipelineProfile, type PipelineStep } from '~/lib/types';
@@ -455,6 +455,16 @@ const close = async () => {
   emit('cancel');
 };
 
+const signOut = async () => {
+  if (dirty.value && !(await confirmDiscard())) return;
+  leaveApproved = true;
+  try {
+    await logout();
+  } finally {
+    await navigateTo('/login');
+  }
+};
+
 /* ------------------------------------------------- guards & keyboard */
 const onBeforeUnload = (event: BeforeUnloadEvent) => {
   // Browsers only allow their built-in prompt for page unload.
@@ -541,6 +551,7 @@ watch(edges, (value) => setEdges(value), { immediate: true });
       <button class="control" type="button" @click="() => fitView({ padding: 0.15 })">Fit view</button>
       <button class="control" type="button" @click="validate">Validate</button>
       <button class="control control-primary" type="button" :disabled="saving" @click="() => void save()">{{ saving ? 'Saving…' : 'Save profile' }}</button>
+      <button class="control" type="button" @click="() => void signOut()">Log out</button>
     </div>
     <div v-if="modelError || saveError || connectNotice || validation.length" class="editor-messages">
       <div v-if="modelError" class="error-state" role="alert">

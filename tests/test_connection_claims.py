@@ -8,6 +8,7 @@ from pathlib import Path
 from orches.models import AgentStatus, utc_now
 from orches.state import ConnectionUseError, StateStore
 
+from test_auth import install_admin_password, login
 from test_connection_tools import make_running_run, start_running_invocation
 
 
@@ -81,6 +82,7 @@ class ClaimApiTest(unittest.TestCase):
         from orches.api import create_app
         from orches.config import AppConfig
 
+        install_admin_password(self)
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         config = AppConfig(
@@ -90,6 +92,7 @@ class ClaimApiTest(unittest.TestCase):
         self.state = StateStore(config.state_db)
         self.record = self.state.create_connection(name="box", os="linux", cred="secret")
         self.client = TestClient(create_app(config))
+        login(self.client)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.addCleanup(self.tmp.cleanup)

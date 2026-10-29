@@ -109,20 +109,20 @@ if [[ "$MODE" != web ]]; then
     ( cd "$REPO" && exec "${SETSID[@]}" "$PYTHON" "${api_args[@]}" ) >"$LOG_DIR/api.log" 2>&1 &
     API_PID=$!
 
-    schema=""
+    health=""
     for _ in $(seq 1 60); do
-        if schema="$(curl -fsS --max-time 2 "http://127.0.0.1:$API_PORT/openapi.json" 2>/dev/null)"; then
+        if health="$(curl -fsS --max-time 2 "http://127.0.0.1:$API_PORT/api/health" 2>/dev/null)"; then
             break
         fi
         kill -0 "$API_PID" 2>/dev/null || { echo "API process exited; see $LOG_DIR/api.log" >&2; exit 1; }
         sleep 0.25
     done
-    [[ -n "$schema" ]] || { echo "API did not start on port $API_PORT; see $LOG_DIR/api.log" >&2; exit 1; }
-    grep -q '"/api/projects"' <<<"$schema" || {
-        echo "API on port $API_PORT is outdated: /api/projects is missing. Reinstall with 'pip install -e .[web]'." >&2
+    [[ -n "$health" ]] || { echo "API did not start on port $API_PORT; see $LOG_DIR/api.log" >&2; exit 1; }
+    if ! grep -q '"service":"orches"' <<<"$health" || ! grep -q '"authentication":"required"' <<<"$health"; then
+        echo "API on port $API_PORT is outdated: expected the authenticated Orches health response. Reinstall with 'pip install -e .[web]'." >&2
         exit 1
-    }
-elif ! curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$API_PORT/openapi.json" 2>/dev/null; then
+    fi
+elif ! curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$API_PORT/api/health" 2>/dev/null; then
     echo "Warning: no API responding on http://127.0.0.1:$API_PORT yet; the web client will proxy there once it starts." >&2
 fi
 
@@ -130,7 +130,8 @@ if [[ "$MODE" != api ]]; then
     echo "Starting web client on http://localhost:$WEB_PORT (log: $LOG_DIR/web.log)"
     # NUXT_IGNORE_LOCK: ports are pinned with --strictPort, so Nuxt's same-directory
     # instance lock (e.g. a stale lock after a crash) must not block this launch.
-    ( cd "$REPO/web" && NUXT_API_PROXY_URL="http://127.0.0.1:$API_PORT" NUXT_IGNORE_LOCK=1 \
+    # The admin secret belongs to the API process only; never hand it to Nuxt.
+    ( cd "$REPO/web" && unset ORCHES_ADMIN_PASSWORD && NUXT_API_PROXY_URL="http://127.0.0.1:$API_PORT" NUXT_IGNORE_LOCK=1 \
         exec "${SETSID[@]}" npm run dev -- --host=127.0.0.1 --port="$WEB_PORT" --strictPort ) >"$LOG_DIR/web.log" 2>&1 &
     WEB_PID=$!
 

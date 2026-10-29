@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { logout } from '~/lib/api';
+
 type Theme = 'light' | 'dark' | 'system';
 const THEME_KEY = 'orches-theme';
 const COLLAPSE_KEY = 'orches-sidebar-collapsed';
@@ -49,6 +51,16 @@ watch(() => route.fullPath, () => { drawer.value?.close(); });
 
 // The profile editor is a distraction-free workbench without the dashboard shell.
 const editorMode = computed(() => route.path.startsWith('/profiles') && Boolean(route.query.edit));
+// The login page carries its own minimal shell.
+const loginMode = computed(() => route.path === '/login');
+
+const signOut = async () => {
+  try {
+    await logout();
+  } finally {
+    await navigateTo('/login');
+  }
+};
 
 const crumbs = computed(() => {
   const path = route.path;
@@ -66,7 +78,7 @@ const crumbs = computed(() => {
 </script>
 
 <template>
-  <NuxtPage v-if="editorMode" />
+  <NuxtPage v-if="editorMode || loginMode" />
   <div v-else :class="`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`">
     <aside class="sidebar">
       <NuxtLink to="/" class="brand"><span class="brand-mark"><BrandMark /></span><span>ORCHES</span></NuxtLink>
@@ -118,6 +130,7 @@ const crumbs = computed(() => {
             <option value="dark">Dark</option>
             <option value="system">System</option>
           </select>
+          <button class="control" type="button" @click="() => void signOut()">Log out</button>
         </div>
       </header>
       <NuxtPage />

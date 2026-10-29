@@ -96,6 +96,18 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
   On-demand project connectivity probe via `OmpClient.probe_mcp`: ephemeral RPC session sends `/mcp test <name>`,
   parses `command_output`, never calls a model. UI: `/mcp-servers` catalog CRUD page (no status column),
   project setup sidebar MCP section with source badges, status display, Check/Fetch/Add/Edit/Remove actions.
+- **Authentication** (`orches/auth.py`): single admin password from `ORCHES_ADMIN_PASSWORD`
+  (≥16 chars; API refuses to start without it). `AdminSessions` keeps PBKDF2 verifier + SHA-256
+  token digests in-process (12 h expiry, 128-session cap, 5-failures/60 s per-peer login limit →
+  429). HTTP middleware 401s everything except `/api/health`, `POST /api/auth/login`, OPTIONS;
+  OpenAPI/docs disabled; CORS allows exactly `ORCHES_WEB_ORIGIN` with Authorization header;
+  `_require_local` removed (bearer auth covers remote use). Secret is scrubbed from all child
+  envs (`start_session`, `probe_mcp`, `omp models`, launcher web children). Web: bearer token in
+  per-tab `sessionStorage` (`orches-admin-token`), `/login` page, `auth.global.ts` middleware,
+  401 → clear token + redirect (handler set in `plugins/api-config.client.ts`), Log out in topbar
+  and editor toolbar. Direct browser→backend via `NUXT_PUBLIC_API_BASE_URL` (bare https origin or
+  http loopback), else same-origin Nuxt proxy. Tests: `tests/test_auth.py`; API fixtures log in
+  through the real route.
 - **Models**: `GET /api/omp-models` shells out to `omp models --json` (chat models only).
 - **Costs** (`orches/costs.py`, schema v4 `model_cost_events`): `OmpRpcSession` calls an optional
   `usage_event_handler(event, index)` for every public `message_end` / `cache_warming_end` as it
