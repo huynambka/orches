@@ -447,70 +447,6 @@ const previewDependencies = computed(() => {
         <NuxtLink v-if="project.pipeline_profile" class="control" :to="`/profiles?edit=${encode(project.pipeline_profile)}`">Open profile</NuxtLink>
       </div>
       <div class="project-layout">
-        <div class="project-stage">
-          <!-- Active or finished run: real execution data only. -->
-          <AgentWorkspace
-            v-if="run && run.pipeline_profile && !profileReplaced"
-            :key="`${run.run.run_id}-${run.pipeline_profile.id}`"
-            :project-id="project.project_id"
-            :run-id="run.run.run_id"
-            :detail="run"
-            :layout="project.agent_layout"
-            @refresh="load"
-            @rerun="(role) => void resume([role])"
-          />
-          <!-- No run yet: a labeled preview of the selected profile, never an invented execution. -->
-          <template v-else-if="!run || profileReplaced">
-            <template v-if="previewProfile">
-              <div class="preview-banner" role="status">
-                <span><strong>Preview</strong> — {{ run ? 'this profile has not run in this project yet' : 'this project has not run yet' }}. Showing the selected profile “{{ previewProfile.name }}”.</span>
-                <NuxtLink class="control" :to="`/profiles?edit=${encode(previewProfile.id)}`">Edit profile</NuxtLink>
-              </div>
-              <section class="agent-workspace" aria-label="Profile preview">
-                <AgentGraph
-                  :key="`preview-${previewProfile.id}`"
-                  :project-id="project.project_id"
-                  :steps="previewProfile.steps"
-                  :layout="project.agent_layout"
-                  :selected="previewSelected"
-                  @select="(role) => { previewSelected = role; }"
-                />
-                <div class="workflow-panel">
-                  <div v-if="!previewSelected" class="empty-state">
-                    <strong>No node selected</strong>
-                    <span>Select a node to view its saved configuration.</span>
-                  </div>
-                  <template v-else-if="previewSelected === 'root'">
-                    <div class="workflow-panel-heading">
-                      <h3>Root orchestrator</h3>
-                    </div>
-                    <div class="panel dock-details">
-                      <div><strong>Model</strong><span>{{ previewProfile.root_model || 'Server default' }}</span></div>
-                      <div><strong>Effort</strong><span>{{ previewProfile.root_thinking || 'Server default' }}</span></div>
-                      <div><strong>Prompt</strong><span v-if="previewProfile.root_prompt" class="preview-prompt">{{ previewProfile.root_prompt }}</span><span v-else>—</span></div>
-                    </div>
-                  </template>
-                  <template v-else-if="previewStep">
-                    <div class="workflow-panel-heading">
-                      <h3>{{ previewStep.name }}</h3>
-                    </div>
-                    <div class="panel dock-details">
-                      <div><strong>Model</strong><span>{{ previewStep.model_selector || '—' }}</span></div>
-                      <div><strong>Effort</strong><span>{{ previewStep.thinking }}</span></div>
-                      <div><strong>Depends on</strong><span>{{ previewDependencies }}</span></div>
-                      <div><strong>Prompt</strong><span v-if="previewStep.prompt" class="preview-prompt">{{ previewStep.prompt }}</span><span v-else>—</span></div>
-                      <div><strong>Id</strong><span class="mono">{{ previewStep.id }}</span></div>
-                    </div>
-                  </template>
-                </div>
-              </section>
-            </template>
-            <div v-else class="panel empty-state">
-              <strong>No pipeline profile selected</strong>
-              <span>Select a profile in the setup panel to preview and run its agents.</span>
-            </div>
-          </template>
-        </div>
         <aside class="panel project-config project-setup" aria-label="Project configuration">
           <div class="project-config-heading"><div><h2 class="page-heading">Project setup</h2><p class="inline-note">The root orchestrator runs the selected profile's agents in dependency order. Save settings before starting.</p></div></div>
           <div class="project-setup-summary">
@@ -531,12 +467,12 @@ const previewDependencies = computed(() => {
               <span v-if="runDisabledReason" class="inline-note" role="status">{{ runDisabledReason }}</span>
             </div>
           </form>
-          <!-- MCP servers section -->
-          <div class="mcp-section">
-            <div class="project-config-heading"><div>
-              <h2 class="page-heading">MCP servers</h2>
-              <p class="inline-note">Project-local MCP server configuration. Changes are saved to the project's <code>.omp/mcp.json</code> immediately.</p>
-            </div></div>
+          <!-- MCP servers section (collapsed by default to keep the canvas near the fold) -->
+          <details class="mcp-section">
+            <summary class="mcp-summary">
+              <h2 class="page-heading">MCP servers<span v-if="mcpServers.length" class="mcp-count">{{ mcpServers.length }}</span></h2>
+              <span class="inline-note">Project-local MCP server configuration. Changes are saved to the project's <code>.omp/mcp.json</code> immediately.</span>
+            </summary>
             <div v-if="mcpError" class="error-state" role="alert">
               <span>{{ mcpError }}</span>
               <button class="control" @click="() => { mcpError = ''; void loadMcp(); }">Reload</button>
@@ -644,15 +580,86 @@ const previewDependencies = computed(() => {
                 </div>
               </div>
             </template>
-          </div>
+          </details>
         </aside>
+        <div class="project-stage">
+          <!-- Active or finished run: real execution data only. -->
+          <AgentWorkspace
+            v-if="run && run.pipeline_profile && !profileReplaced"
+            :key="`${run.run.run_id}-${run.pipeline_profile.id}`"
+            :project-id="project.project_id"
+            :run-id="run.run.run_id"
+            :detail="run"
+            :layout="project.agent_layout"
+            @refresh="load"
+            @rerun="(role) => void resume([role])"
+          />
+          <!-- No run yet: a labeled preview of the selected profile, never an invented execution. -->
+          <template v-else-if="!run || profileReplaced">
+            <template v-if="previewProfile">
+              <div class="preview-banner" role="status">
+                <span><strong>Preview</strong> — {{ run ? 'this profile has not run in this project yet' : 'this project has not run yet' }}. Showing the selected profile “{{ previewProfile.name }}”.</span>
+                <NuxtLink class="control" :to="`/profiles?edit=${encode(previewProfile.id)}`">Edit profile</NuxtLink>
+              </div>
+              <section class="agent-workspace" aria-label="Profile preview">
+                <AgentGraph
+                  :key="`preview-${previewProfile.id}`"
+                  :project-id="project.project_id"
+                  :steps="previewProfile.steps"
+                  :layout="project.agent_layout"
+                  :selected="previewSelected"
+                  @select="(role) => { previewSelected = role; }"
+                />
+                <div class="workflow-panel">
+                  <div v-if="!previewSelected" class="empty-state">
+                    <strong>No node selected</strong>
+                    <span>Select a node to view its saved configuration.</span>
+                  </div>
+                  <template v-else-if="previewSelected === 'root'">
+                    <div class="workflow-panel-heading">
+                      <h3>Root orchestrator</h3>
+                    </div>
+                    <div class="panel dock-details">
+                      <div><strong>Model</strong><span>{{ previewProfile.root_model || 'Server default' }}</span></div>
+                      <div><strong>Effort</strong><span>{{ previewProfile.root_thinking || 'Server default' }}</span></div>
+                      <div><strong>Prompt</strong><span v-if="previewProfile.root_prompt" class="preview-prompt">{{ previewProfile.root_prompt }}</span><span v-else>—</span></div>
+                    </div>
+                  </template>
+                  <template v-else-if="previewStep">
+                    <div class="workflow-panel-heading">
+                      <h3>{{ previewStep.name }}</h3>
+                    </div>
+                    <div class="panel dock-details">
+                      <div><strong>Model</strong><span>{{ previewStep.model_selector || '—' }}</span></div>
+                      <div><strong>Effort</strong><span>{{ previewStep.thinking }}</span></div>
+                      <div><strong>Depends on</strong><span>{{ previewDependencies }}</span></div>
+                      <div><strong>Prompt</strong><span v-if="previewStep.prompt" class="preview-prompt">{{ previewStep.prompt }}</span><span v-else>—</span></div>
+                      <div><strong>Id</strong><span class="mono">{{ previewStep.id }}</span></div>
+                    </div>
+                  </template>
+                </div>
+              </section>
+            </template>
+            <div v-else class="panel empty-state">
+              <strong>No pipeline profile selected</strong>
+              <span>Select a profile in the setup panel to preview and run its agents.</span>
+            </div>
+          </template>
+        </div>
       </div>
     </template>
   </div></main>
 </template>
 
 <style scoped>
-.mcp-section { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+.mcp-section { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.mcp-summary { cursor: pointer; display: grid; gap: 2px; list-style: none; }
+.mcp-summary h2::before { content: '▸'; color: var(--muted); font-size: 12px; }
+details[open] > .mcp-summary h2::before { content: '▾'; }
+.mcp-summary::-webkit-details-marker { display: none; }
+.mcp-summary h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.mcp-count { font-size: 12px; font-weight: 600; color: var(--muted); background: var(--surface-2, var(--surface)); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+details[open] > .mcp-summary { margin-bottom: 12px; }
 .mcp-server-list { display: grid; gap: 12px; }
 .mcp-server-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .mcp-server-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }

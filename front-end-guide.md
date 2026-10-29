@@ -56,7 +56,7 @@ Do not add React, Next.js, @xyflow/react, Zustand, TanStack, or any second UI li
 | Route | Purpose |
 | --- | --- |
 | `/` | Project list: search, filter, sort, paginate, create |
-| `/projects/:projectId` | Project page: run workspace (pipeline graph, logs, chat) with a sticky **Project setup** sidebar (settings, run start) |
+| `/projects/:projectId` | Project page: **Project setup** panel on top (settings, run start, collapsible MCP section), run workspace (pipeline graph, logs, chat) below |
 | `/profiles` | Profile list; `?edit=<profile_id>` opens the editor workbench |
 | `/connections` | Connections address book |
 | `/mcp-servers` | MCP server catalog: reusable server configurations |
@@ -253,9 +253,11 @@ Key rules:
 - `ConfirmDialog` remains separate for delete confirmations.
 
 
-One page: the run workspace fills the left column; a 360px **Project setup** sidebar on the
-right (sticky; stacks below the workspace under 1400px) holds status/progress, the settings form
-(name, folder, objective, brief, profile) and **Save settings** / **Start pipeline**. Header
+One page, stacked vertically: a full-width **Project setup** panel on top — status/progress
+row, the settings form in responsive columns (name, folder, objective, brief, profile),
+**Save settings** / **Start pipeline**, and a collapsed-by-default **MCP servers**
+`<details>` section — with the run workspace below it. The workspace splits canvas and the
+node detail panel 50/50 so conversations and code blocks stay readable. Header
 actions: status badge, **Stop run** (running), **Resume run** (finished), Refresh, Remove project.
 
 - Without a run: a clearly labeled **preview** of the selected profile graph (or an empty

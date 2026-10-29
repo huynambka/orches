@@ -354,9 +354,16 @@ textarea.control { height: auto; min-height: 78px; resize: vertical; padding: 9p
 .project-form-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(240px, 2fr); gap: 12px; }
 .project-form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .project-form-actions .inline-note { max-width: 580px; }
-.project-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; min-width: 0; }
+.project-layout { display: grid; grid-template-columns: 1fr; gap: 16px; min-width: 0; }
 .project-stage { min-width: 0; display: grid; gap: 12px; }
-.project-setup { position: sticky; top: calc(var(--topbar-height) + 16px); }
+/* Setup sits above the canvas: heading/summary in one row, form fields in columns. */
+.project-setup .project-config-heading { margin-bottom: 12px; }
+.project-setup .project-setup-summary {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin-bottom: 14px;
+}
+.project-setup .project-form { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; }
+.project-setup .project-form > .inline-note,
+.project-setup .project-form > .project-form-actions { grid-column: 1 / -1; }
 .project-setup-summary {
   display: grid; gap: 6px; margin-bottom: 16px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
@@ -511,7 +518,7 @@ pre em { color: var(--faint); }
 .workflow-failed, .workflow-blocked { border-color: var(--error); }
 /* Icon-only nodes: the ring is the only selection cue, so it must beat Vue Flow's `:focus { outline: none }`. */
 .vue-flow__node.workflow-selected, .vue-flow__node.workflow-selected:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
-.agent-workspace { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 16px; min-width: 0; }
+.agent-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 1fr); gap: 16px; min-width: 0; }
 .workflow-panel { min-width: 0; display: grid; gap: 12px; align-content: start; }
 .workflow-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .workflow-panel-heading h3 { margin: 0; font-size: 15px; }
@@ -602,10 +609,6 @@ pre em { color: var(--faint); }
 .profile-edge-actions { justify-items: start; }
 
 /* ------------------------------------------------------- responsive */
-@media (max-width: 1400px) {
-  .project-layout { grid-template-columns: 1fr; }
-  .project-setup { position: static; }
-}
 @media (max-width: 1100px) {
   .search-field input { width: 210px; }
   .agent-workspace { grid-template-columns: 1fr; }
