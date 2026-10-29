@@ -6,16 +6,17 @@ import { MiniMap } from '@vue-flow/minimap';
 import { getOmpModels, getPipelineProfile, logout, updatePipelineProfile, type OmpModel } from '~/lib/api';
 import ConfirmDialog from '~/components/ConfirmDialog.vue';
 import { anchorSides, connectSteps, connectionError, insertStepBetween, layoutProfileSteps, POSITION_BOUND, removeDependency, removeStep, validateProfileDraft } from '~/lib/profileGraph';
-import { DEFAULT_THINKING, THINKING_LEVELS, type PipelineProfile, type PipelineStep } from '~/lib/types';
+import { DEFAULT_STEP_TIMEOUT_SECONDS, DEFAULT_THINKING, THINKING_LEVELS, TIMEOUT_SECONDS_MAX, TIMEOUT_SECONDS_MIN, type PipelineProfile, type PipelineStep } from '~/lib/types';
 
 const props = defineProps<{ profile: PipelineProfile }>();
 const emit = defineEmits<{ saved: [PipelineProfile]; cancel: [] }>();
 
-interface Snapshot { name: string; steps: PipelineStep[]; rootPrompt: string; rootModel: string; rootThinking: PipelineProfile['root_thinking'] }
+interface Snapshot { name: string; steps: PipelineStep[]; rootPrompt: string; rootModel: string; rootThinking: PipelineProfile['root_thinking']; pipelineTimeout: number }
 
 const snapshotOf = (profile: PipelineProfile): Snapshot => ({
   name: profile.name, steps: cloneSteps(profile.steps),
   rootPrompt: profile.root_prompt || '', rootModel: profile.root_model || '', rootThinking: profile.root_thinking || '',
+  pipelineTimeout: profile.pipeline_timeout_seconds || 0,
 });
 
 const nodeId = () => `node_${crypto.randomUUID().replaceAll('-', '')}`;
@@ -28,6 +29,7 @@ const steps = ref<PipelineStep[]>(cloneSteps(props.profile.steps));
 const rootPrompt = ref(props.profile.root_prompt || '');
 const rootModel = ref(props.profile.root_model || '');
 const rootThinking = ref<PipelineProfile['root_thinking']>(props.profile.root_thinking || '');
+const pipelineTimeout = ref<number>(props.profile.pipeline_timeout_seconds || 0);
 // Markdown preview toggles for the prompt editors; reset when selection moves.
 const rootPromptPreview = ref(false);
 const agentPromptPreview = ref(false);
@@ -54,7 +56,7 @@ const canvasEl = ref<HTMLElement | null>(null);
 const snapshotEquals = (a: Snapshot, b: Snapshot) => JSON.stringify(a) === JSON.stringify(b);
 const currentSnapshot = (): Snapshot => ({
   name: name.value, steps: cloneSteps(steps.value), rootPrompt: rootPrompt.value, rootModel: rootModel.value,
-  rootThinking: rootThinking.value,
+  rootThinking: rootThinking.value, pipelineTimeout: pipelineTimeout.value,
 });
 const dirty = computed(() => !snapshotEquals(currentSnapshot(), baseline.value));
 
@@ -90,6 +92,7 @@ const applySnapshot = (snapshot: Snapshot) => {
   rootPrompt.value = snapshot.rootPrompt;
   rootModel.value = snapshot.rootModel;
   rootThinking.value = snapshot.rootThinking;
+  pipelineTimeout.value = snapshot.pipelineTimeout;
   if (selectedNode.value && selectedNode.value !== 'root'
     && !snapshot.steps.some((step) => step.id === selectedNode.value)) selectedNode.value = null;
   selectedEdgeId.value = null;
@@ -300,6 +303,7 @@ const addAgent = (position?: { x: number; y: number }) => {
       {
         id, name: 'New agent', model_selector: models.value[0]?.selector || '', prompt: '',
         depends_on: [], position: position ?? positionFor(steps.value.length), thinking: DEFAULT_THINKING,
+        timeout_seconds: DEFAULT_STEP_TIMEOUT_SECONDS,
       },
     ];
   });
@@ -342,7 +346,7 @@ const insertOnEdge = (edgeId: string) => {
   const id = nodeId();
   const inserted = insertStepBetween(steps.value, source, target, {
     id, name: 'New agent', model_selector: models.value[0]?.selector || '', prompt: '',
-    depends_on: [], thinking: DEFAULT_THINKING,
+    depends_on: [], thinking: DEFAULT_THINKING, timeout_seconds: DEFAULT_STEP_TIMEOUT_SECONDS,
     position: {
       x: clampCoord((sourcePosition.x + targetStep.position.x) / 2),
       y: clampCoord((sourcePosition.y + targetStep.position.y) / 2),
@@ -384,7 +388,7 @@ const autoLayout = () => {
 };
 
 const validate = () => {
-  validation.value = validateProfileDraft(name.value, steps.value, rootPrompt.value);
+  validation.value = validateProfileDraft(name.value, steps.value, rootPrompt.value, pipelineTimeout.value);
   if (!validation.value.length) connectNotice.value = 'Profile is valid.';
 };
 
@@ -392,7 +396,7 @@ const save = async () => {
   if (saving.value) return;
   // Surface problems client-side instead of letting the backend 400 and
   // leaving the draft looking saveable.
-  const problems = validateProfileDraft(name.value, steps.value, rootPrompt.value);
+  const problems = validateProfileDraft(name.value, steps.value, rootPrompt.value, pipelineTimeout.value);
   if (problems.length) {
     validation.value = problems;
     saveError.value = 'Fix the listed problems before saving.';
@@ -404,7 +408,9 @@ const save = async () => {
   try {
     const saved = await updatePipelineProfile(props.profile.id, {
       id: props.profile.id, name: name.value.trim(), root_prompt: rootPrompt.value,
-      root_model: rootModel.value, root_thinking: rootThinking.value, steps: steps.value, revision: revision.value,
+      root_model: rootModel.value, root_thinking: rootThinking.value,
+      pipeline_timeout_seconds: pipelineTimeout.value || 0,
+      steps: steps.value, revision: revision.value,
     });
     revision.value = saved.revision ?? revision.value + 1;
     baseline.value = snapshotOf(saved);
@@ -665,6 +671,18 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             <option value="">Server default ([roles.root] in orches.toml)</option>
             <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
+          <label>Pipeline timeout (seconds)<input
+            class="control"
+            type="number"
+            :min="TIMEOUT_SECONDS_MIN"
+            :max="TIMEOUT_SECONDS_MAX"
+            step="1"
+            placeholder="Server default ([roles.root] in orches.toml)"
+            :value="pipelineTimeout || ''"
+            @focus="beginTextEdit"
+            @blur="endTextEdit"
+            @input="pipelineTimeout = Math.trunc(($event.target as HTMLInputElement).valueAsNumber) || 0"
+          ></label>
           <div class="prompt-field">
             <div class="prompt-field-head">
               <span class="prompt-field-label" id="root-prompt-label">Orchestrator prompt</span>
@@ -722,6 +740,17 @@ watch(edges, (value) => setEdges(value), { immediate: true });
           >
             <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
+          <label>Timeout (seconds)<input
+            class="control"
+            type="number"
+            :min="TIMEOUT_SECONDS_MIN"
+            :max="TIMEOUT_SECONDS_MAX"
+            step="1"
+            :value="selectedAgent.timeout_seconds"
+            @focus="beginTextEdit"
+            @blur="endTextEdit"
+            @input="updateSelected({ timeout_seconds: Math.trunc(($event.target as HTMLInputElement).valueAsNumber) })"
+          ></label>
           <div class="prompt-field">
             <div class="prompt-field-head">
               <span class="prompt-field-label" id="agent-prompt-label">Prompt</span>

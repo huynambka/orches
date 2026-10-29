@@ -1,5 +1,6 @@
 import {
-  DEFAULT_THINKING, THINKING_LEVELS,
+  DEFAULT_STEP_TIMEOUT_SECONDS, DEFAULT_THINKING, THINKING_LEVELS,
+  TIMEOUT_SECONDS_MAX, TIMEOUT_SECONDS_MIN,
   type PipelineProfile, type PipelineStep, type ThinkingLevel,
 } from './types';
 
@@ -11,6 +12,7 @@ export interface ProfileExport {
   root_prompt: string;
   root_model: string;
   root_thinking: string;
+  pipeline_timeout_seconds: number;
   steps: PipelineStep[];
 }
 
@@ -25,6 +27,7 @@ export const exportProfile = (profile: PipelineProfile): string =>
       root_prompt: profile.root_prompt || '',
       root_model: profile.root_model || '',
       root_thinking: profile.root_thinking || '',
+      pipeline_timeout_seconds: profile.pipeline_timeout_seconds || 0,
       steps: profile.steps.map((step) => ({
         id: step.id,
         name: step.name,
@@ -33,6 +36,7 @@ export const exportProfile = (profile: PipelineProfile): string =>
         depends_on: [...step.depends_on],
         position: { x: step.position.x, y: step.position.y },
         thinking: step.thinking,
+        timeout_seconds: step.timeout_seconds,
       })),
     } satisfies ProfileExport,
     null,
@@ -51,6 +55,12 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
 
 const finite = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+const timeoutOf = (value: unknown, fallback: number): number => {
+  const seconds = typeof value === 'number' ? Math.trunc(value) : Number.NaN;
+  return Number.isInteger(seconds) && seconds >= TIMEOUT_SECONDS_MIN && seconds <= TIMEOUT_SECONDS_MAX
+    ? seconds : fallback;
+};
 
 /**
  * Parse an exported profile file into a fresh definition. Node ids are
@@ -98,6 +108,7 @@ export const parseProfileExport = (raw: string): Omit<ProfileExport, 'format' | 
       depends_on: dependsOn.map((dep) => idMap[text(dep)]).filter((dep): dep is string => Boolean(dep)),
       position: { x: finite(position.x), y: finite(position.y) },
       thinking: ((THINKING_LEVELS as readonly string[]).includes(thinking) ? thinking : DEFAULT_THINKING) as ThinkingLevel,
+      timeout_seconds: timeoutOf(step.timeout_seconds, DEFAULT_STEP_TIMEOUT_SECONDS),
     };
   });
   const rootThinking = text(record.root_thinking);
@@ -106,6 +117,7 @@ export const parseProfileExport = (raw: string): Omit<ProfileExport, 'format' | 
     root_prompt: text(record.root_prompt),
     root_model: text(record.root_model),
     root_thinking: (THINKING_LEVELS as readonly string[]).includes(rootThinking) ? rootThinking : '',
+    pipeline_timeout_seconds: timeoutOf(record.pipeline_timeout_seconds, 0),
     steps,
   };
 };

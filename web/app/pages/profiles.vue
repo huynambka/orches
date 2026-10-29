@@ -142,6 +142,7 @@ const importFile = async (event: Event) => {
       root_prompt: definition.root_prompt,
       root_model: definition.root_model,
       root_thinking: definition.root_thinking as PipelineProfile['root_thinking'],
+      pipeline_timeout_seconds: definition.pipeline_timeout_seconds,
       revision: created.revision ?? 1,
     });
     profiles.value = [...profiles.value, saved];

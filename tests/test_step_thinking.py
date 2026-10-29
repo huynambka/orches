@@ -10,7 +10,10 @@ from orches.artifacts import ArtifactStore
 from orches.agent_runtime import AgentRunner
 from orches.models import AgentRole, RoleConfig
 from orches.omp import OmpResult
-from orches.pipeline_profiles import DEFAULT_THINKING, THINKING_LEVELS, PipelineStep, profile_from_dict
+from orches.pipeline_profiles import (
+    DEFAULT_STEP_TIMEOUT_SECONDS, DEFAULT_THINKING, MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS,
+    THINKING_LEVELS, PipelineStep, profile_from_dict,
+)
 from orches.state import StateStore
 
 
@@ -63,6 +66,31 @@ class StepThinkingValidationTest(unittest.TestCase):
         for bad in ("turbo", "", 3, None, "High"):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 profile_from_dict(_raw_profile(_raw_step(thinking=bad)))
+
+
+class TimeoutValidationTest(unittest.TestCase):
+    def test_missing_timeout_defaults_and_roundtrips(self) -> None:
+        profile = profile_from_dict(_raw_profile(_raw_step()))
+        self.assertEqual(profile.steps[0].timeout_seconds, DEFAULT_STEP_TIMEOUT_SECONDS)
+        self.assertEqual(profile.to_dict()["steps"][0]["timeout_seconds"], DEFAULT_STEP_TIMEOUT_SECONDS)
+
+    def test_step_timeout_bounds(self) -> None:
+        for ok in (MIN_TIMEOUT_SECONDS, 600, MAX_TIMEOUT_SECONDS):
+            profile = profile_from_dict(_raw_profile(_raw_step(timeout_seconds=ok)))
+            self.assertEqual(profile.steps[0].timeout_seconds, ok)
+        for bad in (MIN_TIMEOUT_SECONDS - 1, MAX_TIMEOUT_SECONDS + 1, 0, -5, True, "600", 1.5, None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                profile_from_dict(_raw_profile(_raw_step(timeout_seconds=bad)))
+
+    def test_pipeline_timeout_is_optional_and_validated(self) -> None:
+        profile = profile_from_dict(_raw_profile(_raw_step()))
+        self.assertEqual(profile.pipeline_timeout_seconds, 0)
+        self.assertNotIn("pipeline_timeout_seconds", profile.to_dict())
+        raw = {**_raw_profile(_raw_step()), "pipeline_timeout_seconds": 7200}
+        self.assertEqual(profile_from_dict(raw).to_dict()["pipeline_timeout_seconds"], 7200)
+        for bad in (5, MAX_TIMEOUT_SECONDS + 1, True, "3600", 1.5, None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                profile_from_dict({**_raw_profile(_raw_step()), "pipeline_timeout_seconds": bad})
 
 
 class _RecordingOmp:

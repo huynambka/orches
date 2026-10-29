@@ -5,8 +5,10 @@
 - Visual DAG editor (Vue Flow): square icon-only nodes, click-to-edit inspector, drag
   connections, insert-on-edge, auto-layout, minimap, undo/redo, keyboard shortcuts.
 - Per node: name, model (from `omp models --json`), effort (`off … max | auto`), prompt,
-  dependencies, position.
-- Fixed root orchestrator node with its own model, effort and appended prompt.
+  dependencies, position, timeout (10–86400 s, default 10800).
+- Fixed root orchestrator node with its own model, effort, appended prompt and an optional
+  pipeline timeout (bounds the root session and thus the whole run; empty uses
+  `[roles.root] timeout_seconds`).
 - Client-side validation mirroring the backend limits; optimistic revisioned saves (409 on
   stale), dirty guards on navigation.
 - Import/Export: per-profile **Export** downloads a portable `*.orches-profile.json`
@@ -79,6 +81,5 @@
 
 ## Not provided
 
-No authentication, no multi-user or remote access, no streaming API, no node types other
-than agent nodes, no shell access for workers, no execution history beyond the current run
-per project.
+No multi-user or remote access, no streaming API, no node types other than agent nodes,
+no execution history beyond the current run per project.

@@ -111,6 +111,7 @@ export const updatePipelineProfile = (id: string, profile: PipelineProfile) =>
       root_prompt: profile.root_prompt || '',
       root_model: profile.root_model || '',
       root_thinking: profile.root_thinking || '',
+      pipeline_timeout_seconds: profile.pipeline_timeout_seconds || 0,
       revision: profile.revision,
     }),
   );

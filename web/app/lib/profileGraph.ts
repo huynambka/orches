@@ -1,4 +1,4 @@
-import { THINKING_LEVELS, type AgentPosition, type PipelineStep } from './types';
+import { THINKING_LEVELS, TIMEOUT_SECONDS_MAX, TIMEOUT_SECONDS_MIN, type AgentPosition, type PipelineStep } from './types';
 
 const byId = (steps: PipelineStep[]) => new Map(steps.map((step) => [step.id, step]));
 
@@ -158,16 +158,23 @@ const MAX_PROMPT = 10000;
 const MAX_NAME = 160;
 const MAX_MODEL = 256;
 
+
+const validTimeout = (value: number): boolean =>
+  Number.isInteger(value) && value >= TIMEOUT_SECONDS_MIN && value <= TIMEOUT_SECONDS_MAX;
 /** Client-side mirror of the backend profile limits; the backend stays authoritative. */
 export const validateProfileDraft = (
   name: string,
   steps: PipelineStep[],
   rootPrompt: string,
+  pipelineTimeout = 0,
 ): string[] => {
   const problems: string[] = [];
   if (!name.trim()) problems.push('Profile name is required.');
   if (name.length > MAX_NAME) problems.push(`Profile name must be at most ${MAX_NAME} characters.`);
   if (rootPrompt.length > MAX_PROMPT) problems.push(`Orchestrator prompt must be at most ${MAX_PROMPT} characters.`);
+  if (pipelineTimeout !== 0 && !validTimeout(pipelineTimeout)) {
+    problems.push(`Pipeline timeout must be ${TIMEOUT_SECONDS_MIN}–${TIMEOUT_SECONDS_MAX} seconds (or empty for the server default).`);
+  }
   if (steps.length === 0) problems.push('Add at least one agent before this profile can run.');
   if (steps.length > MAX_NODES) problems.push(`Profiles may contain at most ${MAX_NODES} agents.`);
   for (const step of steps) {
@@ -178,6 +185,9 @@ export const validateProfileDraft = (
     if (step.model_selector.length > MAX_MODEL) problems.push(`Agent "${label}" model selector is too long.`);
     if (step.prompt.length > MAX_PROMPT) problems.push(`Agent "${label}" prompt must be at most ${MAX_PROMPT} characters.`);
     if (!(THINKING_LEVELS as readonly string[]).includes(step.thinking)) problems.push(`Agent "${label}" has an invalid effort level.`);
+    if (!validTimeout(step.timeout_seconds)) {
+      problems.push(`Agent "${label}" timeout must be ${TIMEOUT_SECONDS_MIN}–${TIMEOUT_SECONDS_MAX} seconds.`);
+    }
     if (!Number.isFinite(step.position.x) || !Number.isFinite(step.position.y)
       || Math.abs(step.position.x) > POSITION_BOUND || Math.abs(step.position.y) > POSITION_BOUND) {
       problems.push(`Agent "${label}" position is out of bounds.`);

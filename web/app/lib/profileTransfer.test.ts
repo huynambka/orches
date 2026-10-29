@@ -9,14 +9,15 @@ const profile: PipelineProfile = {
   root_prompt: 'Be careful',
   root_model: 'anthropic/x',
   root_thinking: 'high',
+  pipeline_timeout_seconds: 7200,
   steps: [
     {
       id: 'node_' + 'a'.repeat(32), name: 'Writer', model_selector: 'm1', prompt: 'write',
-      depends_on: [], position: { x: 10, y: 20 }, thinking: 'low',
+      depends_on: [], position: { x: 10, y: 20 }, thinking: 'low', timeout_seconds: 900,
     },
     {
       id: 'node_' + 'b'.repeat(32), name: 'Reviewer', model_selector: 'm2', prompt: 'review',
-      depends_on: ['node_' + 'a'.repeat(32)], position: { x: 300, y: 20 }, thinking: 'medium',
+      depends_on: ['node_' + 'a'.repeat(32)], position: { x: 300, y: 20 }, thinking: 'medium', timeout_seconds: 10800,
     },
   ],
 };
@@ -28,6 +29,8 @@ describe('profile export/import', () => {
     expect(parsed.root_prompt).toBe('Be careful');
     expect(parsed.root_model).toBe('anthropic/x');
     expect(parsed.root_thinking).toBe('high');
+    expect(parsed.pipeline_timeout_seconds).toBe(7200);
+    expect(parsed.steps.map((s) => s.timeout_seconds)).toEqual([900, 10800]);
     expect(parsed.steps.map((s) => s.name)).toEqual(['Writer', 'Reviewer']);
     // ids regenerated, still valid node ids, dependency points at the new Writer id
     expect(parsed.steps[0]!.id).not.toBe(profile.steps[0]!.id);
@@ -55,13 +58,16 @@ describe('profile export/import', () => {
 
   it('sanitizes hand-edited files: unknown deps dropped, bad effort defaulted', () => {
     const parsed = parseProfileExport(JSON.stringify({
-      format: 'orches-profile', version: 1, name: 'Hand made', root_thinking: 'bogus',
-      steps: [{ name: 'Solo', model_selector: 'm', prompt: '', depends_on: ['node_missing'], position: { x: 'NaN' }, thinking: 'turbo' }],
+      format: 'orches-profile', version: 1, name: 'Hand made', root_thinking: 'bogus', pipeline_timeout_seconds: 'fast',
+      steps: [{ name: 'Solo', model_selector: 'm', prompt: '', depends_on: ['node_missing'], position: { x: 'NaN' }, thinking: 'turbo', timeout_seconds: 5 }],
     }));
     expect(parsed.root_thinking).toBe('');
     expect(parsed.steps[0]!.depends_on).toEqual([]);
     expect(parsed.steps[0]!.thinking).toBe('medium');
     expect(parsed.steps[0]!.position).toEqual({ x: 0, y: 0 });
+    // below-minimum timeout falls back to the default; non-numeric pipeline timeout means "server default"
+    expect(parsed.steps[0]!.timeout_seconds).toBe(10800);
+    expect(parsed.pipeline_timeout_seconds).toBe(0);
   });
 
   it('builds a safe filename', () => {

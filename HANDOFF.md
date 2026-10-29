@@ -197,7 +197,8 @@ tools (`read_profile`, `get_status`, `run_agent`, `read_agent_output`,
 ## Known rough edges / candidate next steps
 
 - No per-agent stop, no run history (single current run by design), no streaming (polling).
-- Worker timeout fixed at 600s / approval fixed at `write` — not configurable per node.
+- Per-node `timeout_seconds` and profile `pipeline_timeout_seconds` are editable in the
+  profile editor; worker approval remains fixed at launch policy.
 - `front-end-guide.md` (Orches-specific design guide) and `README.md` are current; keep
   them in sync with UI changes.
 - Windows launcher: `start-monitor.ps1` (API 8000 + web 3000).

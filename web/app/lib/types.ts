@@ -8,6 +8,12 @@ export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhig
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 export const DEFAULT_THINKING: ThinkingLevel = 'medium';
 
+/** Timeout bounds accepted by the backend profile validator (seconds). */
+export const TIMEOUT_SECONDS_MIN = 10;
+export const TIMEOUT_SECONDS_MAX = 86400;
+/** Default per-agent session timeout; matches the backend default. */
+export const DEFAULT_STEP_TIMEOUT_SECONDS = 10800;
+
 export interface PipelineStep {
   id: string;
   name: string;
@@ -17,6 +23,8 @@ export interface PipelineStep {
   position: AgentPosition;
   /** Reasoning effort for this agent's omp session. */
   thinking: ThinkingLevel;
+  /** Wall-clock limit for this agent's omp session, in seconds. */
+  timeout_seconds: number;
 }
 
 export interface PipelineProfile {
@@ -28,6 +36,8 @@ export interface PipelineProfile {
   root_model?: string;
   /** Effort for the root orchestrator; empty/absent uses the server's [roles.root] default. */
   root_thinking?: ThinkingLevel | '';
+  /** Bound for the root session (and thus the run); 0/absent uses the server's [roles.root] timeout. */
+  pipeline_timeout_seconds?: number;
   revision?: number;
 }
 

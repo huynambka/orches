@@ -10,6 +10,7 @@ const step = (id: string, depends_on: string[] = [], x = 0, y = 0): PipelineStep
   depends_on,
   position: { x, y },
   thinking: 'medium',
+  timeout_seconds: 10800,
 });
 
 describe('profile graph edits', () => {

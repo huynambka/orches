@@ -455,10 +455,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.put("/api/pipeline-profiles/{profile_id}")
     async def update_pipeline_profile(profile_id: str, request: Request) -> dict[str, Any]:
         payload = await _json_object(request)
-        if set(payload) - {"root_prompt", "root_model", "root_thinking"} != {"name", "steps", "revision"}:
+        if set(payload) - {"root_prompt", "root_model", "root_thinking", "pipeline_timeout_seconds"} != {"name", "steps", "revision"}:
             raise HTTPException(
                 status_code=400,
-                detail="body must contain name, steps and revision, and may contain root_prompt, root_model and root_thinking",
+                detail="body must contain name, steps and revision, and may contain root_prompt, root_model, root_thinking and pipeline_timeout_seconds",
             )
         if profile_store.get(profile_id) is None:
             raise HTTPException(status_code=404, detail="pipeline profile not found")
@@ -471,6 +471,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "root_prompt": payload.get("root_prompt", ""),
             "root_model": payload.get("root_model", ""),
             "root_thinking": payload.get("root_thinking", ""),
+            "pipeline_timeout_seconds": payload.get("pipeline_timeout_seconds", 0),
         }
         try:
             return profile_store.update(profile_id, definition, payload["revision"])

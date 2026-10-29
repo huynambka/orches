@@ -7,7 +7,7 @@ const B = `node_${'b'.repeat(32)}`;
 const C = `node_${'c'.repeat(32)}`;
 
 const step = (id: string, name: string, model: string, extra: Partial<PipelineStep> = {}): PipelineStep => ({
-  id, name, model_selector: model, prompt: '', depends_on: [], position: { x: 0, y: 0 }, thinking: 'medium', ...extra,
+  id, name, model_selector: model, prompt: '', depends_on: [], position: { x: 0, y: 0 }, thinking: 'medium', timeout_seconds: 10800, ...extra,
 });
 
 const snapshot: PipelineProfile = {

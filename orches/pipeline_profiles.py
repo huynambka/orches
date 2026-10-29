@@ -13,6 +13,10 @@ MAX_NODES = 64
 # omp --thinking levels; "medium" matches RoleConfig's default for workers.
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 DEFAULT_THINKING = "medium"
+# Per-node worker session timeout; the profile editor can override it per agent.
+DEFAULT_STEP_TIMEOUT_SECONDS = 10_800
+MIN_TIMEOUT_SECONDS = 10
+MAX_TIMEOUT_SECONDS = 86_400
 
 
 def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> str:
@@ -29,6 +33,16 @@ def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> st
 def _thinking(value: Any) -> str:
     if not isinstance(value, str) or value not in THINKING_LEVELS:
         raise ValueError(f"thinking must be one of {', '.join(THINKING_LEVELS)}")
+    return value
+
+
+def _timeout(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer number of seconds")
+    if not MIN_TIMEOUT_SECONDS <= value <= MAX_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"{label} must be between {MIN_TIMEOUT_SECONDS} and {MAX_TIMEOUT_SECONDS} seconds"
+        )
     return value
 
 
@@ -64,6 +78,7 @@ class PipelineStep:
     depends_on: tuple[str, ...] = ()
     position: tuple[float, float] = (0.0, 0.0)
     thinking: str = DEFAULT_THINKING
+    timeout_seconds: int = DEFAULT_STEP_TIMEOUT_SECONDS
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +89,7 @@ class PipelineStep:
             "depends_on": list(self.depends_on),
             "position": _position_dict(self.position),
             "thinking": self.thinking,
+            "timeout_seconds": self.timeout_seconds,
         }
 
 
@@ -86,6 +102,9 @@ class PipelineProfile:
     # Empty means "use [roles.root] model_selector / thinking from orches.toml".
     root_model: str = ""
     root_thinking: str = ""
+    # 0 means "use [roles.root] timeout_seconds from orches.toml" for the root session,
+    # which spans the whole run and therefore bounds the pipeline.
+    pipeline_timeout_seconds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -99,6 +118,8 @@ class PipelineProfile:
             result["root_model"] = self.root_model
         if self.root_thinking:
             result["root_thinking"] = self.root_thinking
+        if self.pipeline_timeout_seconds:
+            result["pipeline_timeout_seconds"] = self.pipeline_timeout_seconds
         return result
 
     def reusable_nodes(self, completed: set[str], rerun: set[str] = frozenset()) -> set[str]:
@@ -163,6 +184,8 @@ def _validate(profile: PipelineProfile) -> PipelineProfile:
     _text(profile.root_model, "root_model", 256)
     if profile.root_thinking:
         _thinking(profile.root_thinking)
+    if profile.pipeline_timeout_seconds:
+        _timeout(profile.pipeline_timeout_seconds, "pipeline_timeout_seconds")
     if len(profile.steps) > MAX_NODES:
         raise ValueError(f"profiles may contain at most {MAX_NODES} nodes")
     ids = [step.id for step in profile.steps]
@@ -177,6 +200,7 @@ def _validate(profile: PipelineProfile) -> PipelineProfile:
         _text(step.model_selector, "model_selector", 256, required=True)
         _text(step.prompt, "prompt", 10000)
         _position(step.position)
+        _timeout(step.timeout_seconds, "timeout_seconds")
         _thinking(step.thinking)
         dependencies[step.id] = set(step.depends_on)
         if len(step.depends_on) != len(set(step.depends_on)):
@@ -207,7 +231,7 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
     if not isinstance(raw, Mapping):
         raise ValueError("pipeline profile must be an object")
     allowed = {"id", "name", "steps"}
-    optional = {"root_prompt", "root_model", "root_thinking"}
+    optional = {"root_prompt", "root_model", "root_thinking", "pipeline_timeout_seconds"}
     if not allowed <= set(raw) or set(raw) - (allowed | optional) or not isinstance(raw["steps"], list):
         raise ValueError("pipeline profile must contain id, name and steps")
     profile_id = raw["id"]
@@ -218,10 +242,13 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
     root_thinking = raw.get("root_thinking", "")
     if root_thinking != "":
         root_thinking = _thinking(root_thinking)
+    pipeline_timeout = raw.get("pipeline_timeout_seconds", 0)
+    if pipeline_timeout != 0:
+        pipeline_timeout = _timeout(pipeline_timeout, "pipeline_timeout_seconds")
     steps: list[PipelineStep] = []
     for index, item in enumerate(raw["steps"]):
         required = {"id", "name", "model_selector", "prompt", "depends_on", "position"}
-        optional = {"thinking"}
+        optional = {"thinking", "timeout_seconds"}
         if (not isinstance(item, Mapping) or not required <= set(item) or set(item) - (required | optional)
                 or not isinstance(item["depends_on"], list)):
             raise ValueError(f"pipeline profile step {index} has invalid fields")
@@ -237,9 +264,11 @@ def profile_from_dict(raw: Mapping[str, Any]) -> PipelineProfile:
             tuple(item["depends_on"]),
             _position(item["position"]),
             _thinking(item.get("thinking", DEFAULT_THINKING)),
+            _timeout(item.get("timeout_seconds", DEFAULT_STEP_TIMEOUT_SECONDS), "timeout_seconds"),
         ))
     return _validate(PipelineProfile(profile_id, _text(raw["name"], "profile name", 160, required=True),
-                                     tuple(steps), root_prompt, root_model, root_thinking))
+                                     tuple(steps), root_prompt, root_model, root_thinking,
+                                     pipeline_timeout))
 
 
 def profile_from_record(raw: Mapping[str, Any]) -> PipelineProfile:

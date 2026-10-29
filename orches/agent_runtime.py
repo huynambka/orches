@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from .artifacts import ArtifactStore
 from .agent_messages import AGENT_MESSAGE_TOOL_NAMES, WORKER_MESSAGE_TOOL_DEFINITIONS
-from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, WORKER_HOST_TOOL_APPROVALS_YML, handle_connection_tool
+from .connection_tools import CONNECTION_TOOL_DEFINITIONS, CONNECTION_TOOL_NAMES, handle_connection_tool
 from .costs import parse_cost_event
 from .models import AgentInvocation, AgentRole, AgentResult, AgentStatus, RoleConfig, utc_now
 from .omp import HostToolHandler, OmpClient, OmpRpcSession
@@ -19,9 +19,6 @@ from .project_files import session_root
 from .prompts import root_system_prompt, root_user_prompt, worker_system_prompt, worker_user_prompt
 from .state import StateStore
 
-# Exec-tier tools (bash, eval, task, ...) are always denied for headless workers
-# under approval_mode="write"; don't advertise tools that can never run.
-WORKER_TOOLS = ("read", "write", "edit", "glob", "grep", "todo", "web_search")
 
 
 class ActiveSessionRegistry:
@@ -98,11 +95,10 @@ class AgentRunner:
         tools as this worker; without it those tools are not advertised.
         """
         node_id = step.id
-        # Headless workers cannot answer approval prompts; grant file writes inside the
-        # bound project and enough time for build-style tasks. Effort comes from the node.
+        # Headless RPC cannot answer approval prompts; allow the native OMP tools.
         config = RoleConfig(
             model_selector=step.model_selector, thinking=step.thinking,
-            approval_mode="write", timeout_seconds=600,
+            approval_mode="yolo", timeout_seconds=step.timeout_seconds,
         )
         started = utc_now()
         started_clock = time.monotonic()
@@ -155,10 +151,6 @@ class AgentRunner:
                         return await message_handler(name, arguments, invocation_id)
                     return {"_is_error": True, "error": "unknown host tool"}
 
-                approvals = self.runs_root / run_id / "worker-approvals.yml"
-                if not approvals.exists():
-                    approvals.parent.mkdir(parents=True, exist_ok=True)
-                    approvals.write_text(WORKER_HOST_TOOL_APPROVALS_YML, encoding="utf-8")
                 advertised = list(CONNECTION_TOOL_DEFINITIONS)
                 if message_handler is not None:
                     advertised += WORKER_MESSAGE_TOOL_DEFINITIONS
@@ -169,10 +161,8 @@ class AgentRunner:
                     session_dir=None, model=config.model_selector, thinking=config.thinking,
                     timeout=config.timeout_seconds, approval_mode=config.approval_mode,
                     max_output_bytes=self.max_output_bytes, stdout_path=stdout_path,
-                    tools=list(WORKER_TOOLS),
                     host_tools=advertised,
                     host_tool_handler=host_tools,
-                    extra_args=["--config", str(approvals)],
                     usage_event_handler=self._usage_recorder(invocation_id),
                 )
                 if self.sessions is not None:
@@ -229,6 +219,7 @@ class AgentRunner:
         root_prompt: str = "",
         model_selector: str | None = None,
         thinking: str | None = None,
+        timeout_seconds: int | None = None,
         on_session: Callable[[OmpRpcSession], None] | None = None,
         on_invocation_started: Callable[[int], None] | None = None,
     ) -> AgentResult:
@@ -238,6 +229,8 @@ class AgentRunner:
             config = replace(config, model_selector=model_selector)
         if thinking:
             config = replace(config, thinking=thinking)
+        if timeout_seconds:
+            config = replace(config, timeout_seconds=timeout_seconds)
         started_clock = time.monotonic()
         invocation_id = self.state.start_invocation(
             AgentInvocation(
@@ -300,7 +293,6 @@ class AgentRunner:
                     stderr_path=raw_dir / f"{role.value}.stderr.txt",
                     host_tools=host_tools,
                     host_tool_handler=host_tool_handler,
-                    no_builtin_tools=True,
                     usage_event_handler=self._usage_recorder(invocation_id),
                 )
                 if on_session is not None:

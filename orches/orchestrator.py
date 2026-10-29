@@ -325,6 +325,7 @@ class Orchestrator:
                     root_prompt=profile.root_prompt,
                     model_selector=profile.root_model or None,
                     thinking=profile.root_thinking or None,
+                    timeout_seconds=profile.pipeline_timeout_seconds or None,
                     on_session=lambda s: root_session.__setitem__(0, s),
                     on_invocation_started=controller.bind_root_invocation,
                 ),
