@@ -28,10 +28,17 @@ const steps = ref<PipelineStep[]>(cloneSteps(props.profile.steps));
 const rootPrompt = ref(props.profile.root_prompt || '');
 const rootModel = ref(props.profile.root_model || '');
 const rootThinking = ref<PipelineProfile['root_thinking']>(props.profile.root_thinking || '');
+// Markdown preview toggles for the prompt editors; reset when selection moves.
+const rootPromptPreview = ref(false);
+const agentPromptPreview = ref(false);
 const revision = ref(props.profile.revision ?? 1);
 const baseline = ref<Snapshot>(snapshotOf(props.profile));
 
 const selectedNode = ref<string | null>(null);
+watch(selectedNode, () => {
+  rootPromptPreview.value = false;
+  agentPromptPreview.value = false;
+});
 const selectedEdgeId = ref<string | null>(null);
 const models = ref<OmpModel[]>([]);
 const modelError = ref('');
@@ -658,14 +665,29 @@ watch(edges, (value) => setEdges(value), { immediate: true });
             <option value="">Server default ([roles.root] in orches.toml)</option>
             <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
-          <label>Orchestrator prompt<textarea
-            class="control"
-            rows="8"
-            :value="rootPrompt"
-            @focus="beginTextEdit"
-            @blur="endTextEdit"
-            @input="rootPrompt = ($event.target as HTMLTextAreaElement).value"
-          /></label>
+          <div class="prompt-field">
+            <div class="prompt-field-head">
+              <span class="prompt-field-label" id="root-prompt-label">Orchestrator prompt</span>
+              <div class="prompt-toggle" role="group" aria-label="Orchestrator prompt view">
+                <button class="control" type="button" :aria-pressed="!rootPromptPreview" @click="rootPromptPreview = false">Write</button>
+                <button class="control" type="button" :aria-pressed="rootPromptPreview" @click="rootPromptPreview = true">Preview</button>
+              </div>
+            </div>
+            <textarea
+              v-if="!rootPromptPreview"
+              class="control"
+              rows="10"
+              aria-labelledby="root-prompt-label"
+              :value="rootPrompt"
+              @focus="beginTextEdit"
+              @blur="endTextEdit"
+              @input="rootPrompt = ($event.target as HTMLTextAreaElement).value"
+            />
+            <div v-else class="prompt-preview" aria-labelledby="root-prompt-label">
+              <AgentMarkdown v-if="rootPrompt.trim()" :text="rootPrompt" />
+              <span v-else class="inline-note">Nothing to preview.</span>
+            </div>
+          </div>
         </div>
         <span v-else-if="!selectedStep" class="inline-note">Click a node icon to see its details: an agent to edit its name, model and prompt; the root node for the orchestrator prompt; a connection to remove it.</span>
         <template v-else>
@@ -700,14 +722,29 @@ watch(edges, (value) => setEdges(value), { immediate: true });
           >
             <option v-for="level in THINKING_LEVELS" :key="level" :value="level">{{ level }}</option>
           </select></label>
-          <label>Prompt<textarea
-            class="control"
-            rows="8"
-            :value="selectedAgent.prompt"
-            @focus="beginTextEdit"
-            @blur="endTextEdit"
-            @input="updateSelected({ prompt: ($event.target as HTMLTextAreaElement).value })"
-          /></label>
+          <div class="prompt-field">
+            <div class="prompt-field-head">
+              <span class="prompt-field-label" id="agent-prompt-label">Prompt</span>
+              <div class="prompt-toggle" role="group" aria-label="Prompt view">
+                <button class="control" type="button" :aria-pressed="!agentPromptPreview" @click="agentPromptPreview = false">Write</button>
+                <button class="control" type="button" :aria-pressed="agentPromptPreview" @click="agentPromptPreview = true">Preview</button>
+              </div>
+            </div>
+            <textarea
+              v-if="!agentPromptPreview"
+              class="control"
+              rows="10"
+              aria-labelledby="agent-prompt-label"
+              :value="selectedAgent.prompt"
+              @focus="beginTextEdit"
+              @blur="endTextEdit"
+              @input="updateSelected({ prompt: ($event.target as HTMLTextAreaElement).value })"
+            />
+            <div v-else class="prompt-preview" aria-labelledby="agent-prompt-label">
+              <AgentMarkdown v-if="selectedAgent.prompt.trim()" :text="selectedAgent.prompt" />
+              <span v-else class="inline-note">Nothing to preview.</span>
+            </div>
+          </div>
           <span class="inline-note mono">{{ selectedAgent.id }}</span>
         </template>
       </aside>

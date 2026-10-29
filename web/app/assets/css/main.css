@@ -574,7 +574,7 @@ pre em { color: var(--faint); }
 .editor-canvas { flex: 1; min-width: 0; position: relative; }
 .editor-canvas .vue-flow { height: 100%; }
 .editor-inspector {
-  width: clamp(380px, 30vw, 520px); flex: none; border-left: 1px solid var(--border); background: var(--surface);
+  width: clamp(460px, 38vw, 720px); flex: none; border-left: 1px solid var(--border); background: var(--surface);
   padding: 14px 16px; overflow-y: auto; display: grid; gap: 12px; align-content: start;
 }
 .editor-inspector h3 { margin: 0; font-size: 14px; }
@@ -609,6 +609,19 @@ pre em { color: var(--faint); }
 .profile-node-panel label .control, .editor-inspector label .control { font-weight: 400; }
 .profile-node-panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .profile-edge-actions { justify-items: start; }
+.editor-inspector textarea.control { resize: vertical; min-height: 180px; }
+.prompt-field { display: grid; gap: 5px; min-width: 0; }
+.prompt-field-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.prompt-field-label { font-weight: 600; color: var(--fg); font-size: 13px; }
+.prompt-toggle { display: flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.prompt-toggle .control { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12px; background: var(--surface); }
+.prompt-toggle .control + .control { border-left: 1px solid var(--border); }
+.prompt-toggle .control[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.prompt-preview {
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+  padding: 10px 12px; min-height: 180px; max-height: 480px; overflow-y: auto;
+}
+.prompt-preview .conversation-markdown { font-size: 13px; }
 
 /* ------------------------------------------------------- login */
 .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); }
