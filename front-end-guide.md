@@ -59,10 +59,10 @@ Do not add React, Next.js, @xyflow/react, Zustand, TanStack, or any second UI li
 | `/projects/:projectId` | Project page: run workspace (pipeline graph, logs, chat) with a sticky **Project setup** sidebar (settings, run start) |
 | `/profiles` | Profile list; `?edit=<profile_id>` opens the editor workbench |
 | `/connections` | Connections address book |
+| `/mcp-servers` | MCP server catalog: reusable server configurations |
 | `/costs` | Cost summary: by project (expandable per-model rows) and by model |
 
-Navigation shows exactly Projects, Profiles, Connections, Costs. No Overview, Settings,
-Executions, or Documentation entries.
+Navigation shows exactly Projects, Profiles, Connections, MCP servers, Costs.
 
 ## 4. Global Visual Design System
 
@@ -147,10 +147,19 @@ to the user.
 
 ### Connections (`/connections`)
 
-Informational address book. Form (name, OS, IP, credential) + table. Credentials are
-masked everywhere; reveal is an explicit per-row action backed by the dedicated reveal
-endpoint, abortable, and hidden again on demand; clearing requires explicit confirmation.
-Copy must describe an address book, never an executable lab.
+Informational address book. List-first: table (name, OS, IP, credential status, usage,
+updated) with an **Add connection** button in the toolbar that opens a `<dialog>` modal.
+Edit also opens the dialog. Credentials are masked everywhere; reveal is an explicit
+per-row action backed by the dedicated reveal endpoint, abortable, and hidden again on
+demand; clearing requires explicit confirmation.
+
+### MCP servers (`/mcp-servers`)
+
+Central catalog of reusable MCP server configurations. List-first: table (name, transport,
+endpoint, revision) with an **Add server** button in the toolbar that opens a `<dialog>`
+modal containing the `McpServerEditor` component. Edit also opens the dialog. No status
+column — status checking is project-only. Deletion uses `ConfirmDialog` and warns that
+existing project copies are unaffected. Never auto-update project copies.
 
 ### Costs (`/costs`)
 
@@ -208,6 +217,41 @@ canvas has focus, Escape clears selection; edge selection also offers removal in
 inspector. Never fight native text-field editing.
 
 ## 8. Project Page (`/projects/:projectId`)
+
+## 8½. Dialog pattern for CRUD pages
+
+List pages (Connections, MCP servers, and future CRUD pages) show the data table first
+with toolbar actions. Create and Edit open a native `<dialog class="modal">` via
+`.showModal()`:
+
+```
+<dialog ref="formDialog" class="modal" :aria-label="..." @close="resetForm">
+  <div class="modal-head">
+    <h2 class="page-heading">Title</h2>
+    <button class="modal-close" type="button" aria-label="Close" @click="closeDialog">✕</button>
+  </div>
+  <div class="modal-body">
+    <form ...>
+      <!-- fields -->
+      <div class="modal-actions">
+        <button class="control" type="button" @click="closeDialog">Cancel</button>
+        <button class="control control-primary" type="submit">Save</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+```
+
+Key rules:
+- `openCreate()` resets the form then calls `formDialog.value?.showModal()`.
+- `startEdit(item)` loads data, populates the draft, then calls `.showModal()`.
+- `closeDialog()` calls `formDialog.value?.close()` then `resetForm()`.
+- On success the dialog closes and the list reloads.
+- The `@close` event (Escape key) also calls `resetForm`.
+- Never show the form inline on the page; the list is always the primary view.
+- `.modal-close` uses the global CSS class (no scoped override needed).
+- `ConfirmDialog` remains separate for delete confirmations.
+
 
 One page: the run workspace fills the left column; a 360px **Project setup** sidebar on the
 right (sticky; stacks below the workspace under 1400px) holds status/progress, the settings form

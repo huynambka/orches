@@ -17,6 +17,7 @@ const formError = ref('');
 const saving = ref(false);
 const editingId = ref<string | null>(null);
 const draft = ref<Draft>({ ...emptyDraft });
+const formDialog = ref<HTMLDialogElement | null>(null);
 const clearCred = ref(false);
 const revealedId = ref<string | null>(null);
 const revealedCred = ref<string | null>(null);
@@ -56,6 +57,17 @@ const startEdit = (connection: Connection) => {
   draft.value = { name: connection.name, os: connection.os, ip: connection.ip || '', cred: '' };
   clearCred.value = false;
   formError.value = '';
+  formDialog.value?.showModal();
+};
+
+const openCreate = () => {
+  resetForm();
+  formDialog.value?.showModal();
+};
+
+const closeDialog = () => {
+  formDialog.value?.close();
+  resetForm();
 };
 
 const submit = async (event: Event) => {
@@ -82,7 +94,7 @@ const submit = async (event: Event) => {
       });
     }
     hideCredential();
-    resetForm();
+    closeDialog();
     await load();
   } catch (caught) {
     formError.value = caught instanceof Error ? caught.message : 'Unable to save connection';
@@ -104,7 +116,7 @@ const remove = async (connection: Connection) => {
   formError.value = '';
   try {
     await deleteConnection(connection.connection_id);
-    if (editingId.value === connection.connection_id) resetForm();
+    if (editingId.value === connection.connection_id) closeDialog();
     hideCredential();
     await load();
   } catch (caught) {
@@ -147,36 +159,12 @@ const usageLabel = (connection: Connection) =>
       <span class="page-help">Address book of machines your agents work with — pipeline agents can list these and reveal a credential via host tools; Orches itself never connects to them.</span>
     </div>
     <div v-if="error" class="error-state" role="alert"><span>{{ error }}</span><button class="control" @click="() => void load()">Retry</button></div>
-    <section class="panel project-config" aria-label="Connection form">
-      <div class="project-config-heading"><div>
-        <h2 class="page-heading">{{ editingId ? 'Edit connection' : 'New connection' }}</h2>
-        <p class="inline-note">Credentials are stored in plaintext in the local SQLite database. Anyone with access to that file or this local API can read them.</p>
-      </div></div>
-      <form class="project-form" @submit="(event) => void submit(event)">
-        <div class="project-form-row">
-          <label>Name<input class="control" required :maxlength="160" v-model="draft.name" placeholder="Windows analysis VM" /></label>
-          <label>OS<input class="control" required :maxlength="100" v-model="draft.os" placeholder="Windows 11 23H2" /></label>
-        </div>
-        <div class="project-form-row">
-          <label>IP address<input class="control" v-model="draft.ip" placeholder="192.0.2.10" /></label>
-          <label>Credential<input class="control" type="password" autocomplete="new-password" :maxlength="4096" v-model="draft.cred" :placeholder="editingId ? 'Leave blank to keep the stored credential' : 'analyst / password'" /></label>
-        </div>
-        <div v-if="editingId" class="project-form-actions">
-          <button class="control" type="button" :disabled="saving || Boolean(draft.cred)" @click="() => clearCred = !clearCred">{{ clearCred ? 'Credential will be cleared' : 'Clear credential' }}</button>
-          <span v-if="clearCred" class="inline-note" role="status">Saving will delete the stored credential.</span>
-        </div>
-        <div class="project-form-actions">
-          <button class="control control-primary" type="submit" :disabled="saving">{{ saving ? 'Saving…' : editingId ? 'Save changes' : 'Add connection' }}</button>
-          <button v-if="editingId" class="control" type="button" :disabled="saving" @click="resetForm">Cancel</button>
-        </div>
-        <p v-if="formError" class="create-error" role="alert">{{ formError }}</p>
-      </form>
-    </section>
     <section class="panel" aria-label="Connections">
       <div class="panel-toolbar">
         <span class="toolbar-count">{{ connections.length }} connections</span>
         <span class="toolbar-spacer" />
         <button class="control" :disabled="loading" @click="() => void load()">{{ loading ? 'Refreshing…' : 'Refresh' }}</button>
+        <button class="control control-primary" type="button" @click="openCreate">Add connection</button>
       </div>
       <div v-if="loading && !connections.length" class="empty-state"><strong>Loading connections…</strong></div>
       <div v-else-if="connections.length" class="tableWrap"><table>
@@ -207,5 +195,35 @@ const usageLabel = (connection: Connection) =>
       </table></div>
       <div v-else class="empty-state"><strong>No connections</strong><span>Record the machines you analyze on: name, OS, IP and credential.</span></div>
     </section>
+
+    <dialog ref="formDialog" class="modal" :aria-label="editingId ? 'Edit connection' : 'Add connection'" @close="resetForm">
+      <div class="modal-head">
+        <h2 class="page-heading">{{ editingId ? 'Edit connection' : 'New connection' }}</h2>
+        <button class="modal-close" type="button" aria-label="Close" @click="closeDialog">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="inline-note">Credentials are stored in plaintext in the local SQLite database. Anyone with access to that file or this local API can read them.</p>
+        <form class="project-form" @submit="(event) => void submit(event)">
+          <div class="project-form-row">
+            <label>Name<input class="control" required :maxlength="160" v-model="draft.name" placeholder="Windows analysis VM" /></label>
+            <label>OS<input class="control" required :maxlength="100" v-model="draft.os" placeholder="Windows 11 23H2" /></label>
+          </div>
+          <div class="project-form-row">
+            <label>IP address<input class="control" v-model="draft.ip" placeholder="192.0.2.10" /></label>
+            <label>Credential<input class="control" type="password" autocomplete="new-password" :maxlength="4096" v-model="draft.cred" :placeholder="editingId ? 'Leave blank to keep the stored credential' : 'analyst / password'" /></label>
+          </div>
+          <div v-if="editingId" class="project-form-actions">
+            <button class="control" type="button" :disabled="saving || Boolean(draft.cred)" @click="() => clearCred = !clearCred">{{ clearCred ? 'Credential will be cleared' : 'Clear credential' }}</button>
+            <span v-if="clearCred" class="inline-note" role="status">Saving will delete the stored credential.</span>
+          </div>
+          <div class="modal-actions">
+            <button class="control" type="button" :disabled="saving" @click="closeDialog">Cancel</button>
+            <button class="control control-primary" type="submit" :disabled="saving">{{ saving ? 'Saving…' : editingId ? 'Save changes' : 'Add connection' }}</button>
+          </div>
+          <p v-if="formError" class="create-error" role="alert">{{ formError }}</p>
+        </form>
+      </div>
+    </dialog>
   </div></main>
 </template>
+

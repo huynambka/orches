@@ -15,6 +15,7 @@ const editingName = ref<string | null>(null);
 const editingRevision = ref(0);
 const draftName = ref('');
 const draftConfig = ref<McpServerConfig>({ command: '' });
+const formDialog = ref<HTMLDialogElement | null>(null);
 
 const load = async () => {
   try {
@@ -37,6 +38,11 @@ const resetForm = () => {
   formError.value = '';
 };
 
+const openCreate = () => {
+  resetForm();
+  formDialog.value?.showModal();
+};
+
 const startEdit = async (entry: McpCatalogEntry) => {
   formError.value = '';
   try {
@@ -45,9 +51,15 @@ const startEdit = async (entry: McpCatalogEntry) => {
     editingRevision.value = detail.revision;
     draftName.value = detail.name;
     draftConfig.value = { ...detail.config };
+    formDialog.value?.showModal();
   } catch (caught) {
     formError.value = caught instanceof Error ? caught.message : 'Unable to load server details';
   }
+};
+
+const closeDialog = () => {
+  formDialog.value?.close();
+  resetForm();
 };
 
 const submit = async (event: Event) => {
@@ -63,7 +75,7 @@ const submit = async (event: Event) => {
     } else {
       await createMcpServer(name, draftConfig.value);
     }
-    resetForm();
+    closeDialog();
     await load();
   } catch (caught) {
     formError.value = caught instanceof Error ? caught.message : 'Unable to save server';
@@ -82,13 +94,12 @@ const remove = async (entry: McpCatalogEntry) => {
     danger: true,
   });
   if (!accepted) return;
-  formError.value = '';
+  error.value = '';
   try {
     await deleteMcpServer(entry.name);
-    if (editingName.value === entry.name) resetForm();
     await load();
   } catch (caught) {
-    formError.value = caught instanceof Error ? caught.message : 'Unable to remove server';
+    error.value = caught instanceof Error ? caught.message : 'Unable to remove server';
   }
 };
 </script>
@@ -101,31 +112,12 @@ const remove = async (entry: McpCatalogEntry) => {
       <span class="page-help">Reusable MCP server configurations. Adding a catalog entry to a project copies a snapshot — central edits do not automatically update projects.</span>
     </div>
     <div v-if="error" class="error-state" role="alert"><span>{{ error }}</span><button class="control" @click="() => void load()">Retry</button></div>
-    <section class="panel project-config" aria-label="MCP server form">
-      <div class="project-config-heading"><div>
-        <h2 class="page-heading">{{ editingName ? 'Edit server' : 'New server' }}</h2>
-        <p class="inline-note">Credentials in config are stored in plaintext. Use <code>${"${VAR}"}</code> placeholders or OAuth for sensitive values.</p>
-      </div></div>
-      <form class="project-form" @submit="(event) => void submit(event)">
-        <McpServerEditor
-          v-model="draftConfig"
-          :name="draftName"
-          :editing="Boolean(editingName)"
-          :disabled="saving"
-          @update:name="draftName = $event"
-        />
-        <div class="project-form-actions">
-          <button class="control control-primary" type="submit" :disabled="saving">{{ saving ? 'Saving…' : editingName ? 'Save changes' : 'Add server' }}</button>
-          <button v-if="editingName" class="control" type="button" :disabled="saving" @click="resetForm">Cancel</button>
-        </div>
-        <p v-if="formError" class="create-error" role="alert">{{ formError }}</p>
-      </form>
-    </section>
     <section class="panel" aria-label="MCP server catalog">
       <div class="panel-toolbar">
         <span class="toolbar-count">{{ servers.length }} server{{ servers.length === 1 ? '' : 's' }}</span>
         <span class="toolbar-spacer" />
         <button class="control" :disabled="loading" @click="() => void load()">{{ loading ? 'Refreshing…' : 'Refresh' }}</button>
+        <button class="control control-primary" type="button" @click="openCreate">Add server</button>
       </div>
       <div v-if="loading && !servers.length" class="empty-state"><strong>Loading servers…</strong></div>
       <div v-else-if="servers.length" class="tableWrap"><table>
@@ -145,5 +137,32 @@ const remove = async (entry: McpCatalogEntry) => {
       </table></div>
       <div v-else class="empty-state"><strong>No MCP servers</strong><span>Add reusable MCP server configurations that can be selected in projects.</span></div>
     </section>
+
+    <!-- Create / Edit dialog -->
+    <dialog ref="formDialog" class="modal mcp-form-modal" :aria-label="editingName ? 'Edit MCP server' : 'Add MCP server'" @close="resetForm">
+      <div class="modal-head">
+        <h2 class="page-heading">{{ editingName ? 'Edit server' : 'New server' }}</h2>
+        <button class="control modal-close" type="button" aria-label="Close" @click="closeDialog">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="inline-note">Credentials in config are stored in plaintext. Use <code>${"${VAR}"}</code> placeholders or OAuth for sensitive values.</p>
+        <form class="project-form" @submit="(event) => void submit(event)">
+          <McpServerEditor
+            v-model="draftConfig"
+            :name="draftName"
+            :editing="Boolean(editingName)"
+            :disabled="saving"
+            @update:name="draftName = $event"
+          />
+          <div class="modal-actions">
+            <button class="control" type="button" :disabled="saving" @click="closeDialog">Cancel</button>
+            <button class="control control-primary" type="submit" :disabled="saving">{{ saving ? 'Saving…' : editingName ? 'Save changes' : 'Add server' }}</button>
+          </div>
+          <p v-if="formError" class="create-error" role="alert">{{ formError }}</p>
+        </form>
+      </div>
+    </dialog>
   </div></main>
 </template>
+
+
