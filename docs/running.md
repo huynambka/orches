@@ -102,6 +102,26 @@ Restart the API after pulling backend changes: schema upgrades run at startup, a
 tasks live inside the API process (runs started by a previous process are marked failed
 on restart).
 
+## Docker (web client)
+
+`web/Dockerfile` packages the Nuxt client as a standalone Node server (multi-stage,
+`node:22-alpine`, runs as the unprivileged `node` user on port 3000):
+
+```text
+docker build -t orches-web web
+docker run --rm -p 3000:3000 \
+  -e NUXT_PUBLIC_API_BASE_URL=https://<backend-host> orches-web
+```
+
+`NUXT_PUBLIC_API_BASE_URL` is the backend origin the **browser** calls directly, so it
+must be reachable from the user's machine, not from inside the container (bare https
+origin; http accepted only for loopback development). Set the API's
+`ORCHES_WEB_ORIGIN` to the origin users load the container from. The container holds
+no secrets — never pass `ORCHES_ADMIN_PASSWORD` to it. Without
+`NUXT_PUBLIC_API_BASE_URL` the client falls back to the same-origin `/api` proxy,
+whose target (`NUXT_API_PROXY_URL`) is validated loopback-only — inside a container
+that is the container's own loopback, so direct mode is the supported deployment.
+
 ## CLI
 
 ```text

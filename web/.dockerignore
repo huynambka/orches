@@ -1,0 +1,10 @@
+node_modules
+.output
+.nuxt
+.data
+.nitro
+.cache
+npm-debug.log*
+Dockerfile
+.dockerignore
+*.test.ts
