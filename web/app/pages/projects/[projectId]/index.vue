@@ -448,18 +448,27 @@ const previewDependencies = computed(() => {
       </div>
       <div class="project-layout">
         <aside class="panel project-config project-setup" aria-label="Project configuration">
-          <div class="project-config-heading"><div><h2 class="page-heading">Project setup</h2><p class="inline-note">The root orchestrator runs the selected profile's agents in dependency order. Save settings before starting.</p></div></div>
-          <div class="project-setup-summary">
-            <span><strong>Status</strong><StatusBadge v-if="project.current_run" :status="project.status" /><template v-else>Not started</template></span>
-            <span><strong>Updated</strong>{{ new Date(project.updated_at).toLocaleString() }}</span>
-            <ProgressBar :progress="project.progress" :has-run="Boolean(project.current_run)" />
+          <div class="setup-head">
+            <div>
+              <h2 class="page-heading">Project setup</h2>
+              <p class="inline-note">The root orchestrator runs the selected profile's agents in dependency order. Save settings before starting.</p>
+            </div>
+            <div class="setup-status">
+              <span class="setup-status-item"><strong>Status</strong><StatusBadge v-if="project.current_run" :status="project.status" /><template v-else>Not started</template></span>
+              <span class="setup-status-item"><strong>Updated</strong>{{ new Date(project.updated_at).toLocaleString() }}</span>
+              <ProgressBar :progress="project.progress" :has-run="Boolean(project.current_run)" />
+            </div>
           </div>
-          <form class="project-form" @submit="(event) => void save(event)">
-            <label>Project name<input class="control" required :maxlength="160" :value="draft.name || ''" @input="(event) => change({ name: (event.target as HTMLInputElement).value })"></label>
-            <label>Project folder<input class="control" readonly :value="project.project_directory"></label>
-            <label>Objective<textarea class="control" :maxlength="2000" :rows="2" :value="draft.target || ''" placeholder="What this pipeline should accomplish in this folder" @input="(event) => change({ target: (event.target as HTMLTextAreaElement).value })" /></label>
-            <label>Initial brief for agents<textarea class="control" :maxlength="10000" :rows="5" :value="draft.initial_prompt || ''" placeholder="Context and constraints; this is shared as structured data, not as instructions." @input="(event) => change({ initial_prompt: (event.target as HTMLTextAreaElement).value })" /></label>
-            <label>Pipeline profile<select class="control" :value="draft.pipeline_profile || ''" @change="(event) => change({ pipeline_profile: (event.target as HTMLSelectElement).value || null })"><option value="">No profile selected</option><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.steps.length === 0 ? ' (draft)' : '' }}</option></select></label>
+          <form class="project-form setup-form" @submit="(event) => void save(event)">
+            <div class="setup-row setup-row-fields">
+              <label>Project name<input class="control" required :maxlength="160" :value="draft.name || ''" @input="(event) => change({ name: (event.target as HTMLInputElement).value })"></label>
+              <label>Project folder<input class="control" readonly :value="project.project_directory"></label>
+              <label>Pipeline profile<select class="control" :value="draft.pipeline_profile || ''" @change="(event) => change({ pipeline_profile: (event.target as HTMLSelectElement).value || null })"><option value="">No profile selected</option><option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.name }}{{ profile.steps.length === 0 ? ' (draft)' : '' }}</option></select></label>
+            </div>
+            <div class="setup-row setup-row-text">
+              <label>Objective<textarea class="control" :maxlength="2000" :rows="3" :value="draft.target || ''" placeholder="What this pipeline should accomplish in this folder" @input="(event) => change({ target: (event.target as HTMLTextAreaElement).value })" /></label>
+              <label>Initial brief for agents<textarea class="control" :maxlength="10000" :rows="3" :value="draft.initial_prompt || ''" placeholder="Context and constraints; this is shared as structured data, not as instructions." @input="(event) => change({ initial_prompt: (event.target as HTMLTextAreaElement).value })" /></label>
+            </div>
             <p v-if="!profiles.length" class="inline-note">No profiles yet. Create one in the <NuxtLink to="/profiles">Profiles</NuxtLink> tab.</p>
             <div class="project-form-actions">
               <button class="control" type="submit" :disabled="saving || starting || !dirty">{{ saving ? 'Saving…' : 'Save settings' }}</button>

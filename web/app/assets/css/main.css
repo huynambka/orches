@@ -294,7 +294,7 @@ tbody tr:hover { background: var(--surface-2); }
 .progress-wrap { min-width: 116px; max-width: 190px; }
 .progress-track { height: 4px; background: var(--surface-2); border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
 .progress-fill { height: 100%; background: var(--accent); border-radius: 10px; }
-.progress-copy { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.progress-copy { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .progress-not-started { color: var(--muted); white-space: normal; font-size: 12px; }
 .empty-state { padding: 54px 20px; text-align: center; color: var(--muted); display: grid; gap: 3px; }
 .empty-state strong { display: block; color: var(--fg); font-size: 15px; }
@@ -347,7 +347,6 @@ textarea.control { height: auto; min-height: 78px; resize: vertical; padding: 9p
 .cost-model-row td { background: var(--surface-2); border-top: 0; }
 .cost-model-name { padding-left: 32px; }
 .project-config { padding: 19px 20px; }
-.project-config-heading { margin-bottom: 16px; }
 .project-form { display: grid; gap: 15px; }
 .project-form label { display: grid; gap: 6px; min-width: 0; color: var(--fg); font-size: 14px; font-weight: 600; }
 .project-form label .control { width: 100%; font-weight: 400; }
@@ -356,21 +355,24 @@ textarea.control { height: auto; min-height: 78px; resize: vertical; padding: 9p
 .project-form-actions .inline-note { max-width: 580px; }
 .project-layout { display: grid; grid-template-columns: 1fr; gap: 16px; min-width: 0; }
 .project-stage { min-width: 0; display: grid; gap: 12px; }
-/* Setup sits above the canvas: heading/summary in one row, form fields in columns. */
-.project-setup .project-config-heading { margin-bottom: 12px; }
-.project-setup .project-setup-summary {
-  display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin-bottom: 14px;
+/* Setup sits above the canvas: heading + status cluster in one row, aligned field rows below. */
+.setup-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px 32px; flex-wrap: wrap; margin-bottom: 16px;
 }
-.project-setup .project-form { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; }
-.project-setup .project-form > .inline-note,
-.project-setup .project-form > .project-form-actions { grid-column: 1 / -1; }
-.project-setup-summary {
-  display: grid; gap: 6px; margin-bottom: 16px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
-  color: var(--muted); font-size: 13px;
+.setup-head .inline-note { max-width: 560px; }
+.setup-status {
+  display: flex; align-items: center; gap: 8px 22px; flex-wrap: wrap;
+  padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--muted); font-size: 13px;
 }
-.project-setup-summary span { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.project-setup-summary span strong { color: var(--fg); font-weight: 650; }
+.setup-status-item { display: flex; align-items: center; gap: 7px; }
+.setup-status-item strong { color: var(--fg); font-weight: 650; }
+.setup-status .progress-wrap { min-width: 190px; }
+.setup-form .setup-row { display: grid; gap: 14px; }
+.setup-row-fields { grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.5fr) minmax(180px, 1fr); }
+.setup-row-text { grid-template-columns: 1fr 1fr; }
+.setup-row-text textarea.control { resize: vertical; min-height: 74px; }
 .project-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .page-shell-narrow { max-width: 1180px; }
 .profile-grid {
@@ -613,6 +615,10 @@ pre em { color: var(--faint); }
   .search-field input { width: 210px; }
   .agent-workspace { grid-template-columns: 1fr; }
   .editor-inspector { width: 300px; }
+  .setup-row-fields { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 760px) {
+  .setup-row-fields, .setup-row-text { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
   .editor-palette { display: none; }
