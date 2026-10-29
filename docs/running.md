@@ -61,6 +61,11 @@ Windows one-liner: `.\start-monitor.ps1` opens both in separate PowerShell windo
 for the API's `/openapi.json`, then opens the browser. Options: `-ApiPort`, `-WebPort`,
 `-Config <path>`, `-NoBrowser`.
 
+Linux/macOS one-liner: `./start-monitor.sh` runs both as children of one terminal
+(logs in `.orches/logs/api.log` and `web.log`), waits for readiness, opens the browser
+via `xdg-open` when a display is available, and stops both on Ctrl+C. Options:
+`--api-port N`, `--web-port N`, `--config <path>`, `--no-browser`.
+
 Restart the API after pulling backend changes: schema upgrades run at startup, and run
 tasks live inside the API process (runs started by a previous process are marked failed
 on restart).
