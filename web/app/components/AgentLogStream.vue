@@ -13,13 +13,45 @@ const conversationEl = ref<HTMLElement | null>(null);
 // up pauses the follow, scrolling back down resumes it.
 const pinned = ref(true);
 
-const onConversationScroll = () => {
+// Render only the newest entries; scrolling to the top reveals older ones in
+// steps without losing the reader's place.
+const INITIAL_VISIBLE = 10;
+const LOAD_STEP = 10;
+const visibleCount = ref(INITIAL_VISIBLE);
+const visibleEntries = computed(() => entries.value.slice(-visibleCount.value));
+const firstVisibleIndex = computed(() => entries.value.length - visibleEntries.value.length);
+const hiddenCount = computed(() => firstVisibleIndex.value);
+let loadingOlder = false;
+
+const loadOlder = async () => {
   const el = conversationEl.value;
-  if (el) pinned.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+  if (!el || loadingOlder || !hiddenCount.value) return;
+  loadingOlder = true;
+  try {
+    const previousHeight = el.scrollHeight;
+    const previousTop = el.scrollTop;
+    visibleCount.value = Math.min(entries.value.length, visibleCount.value + LOAD_STEP);
+    await nextTick();
+    // Keep the reader anchored on the message they were looking at.
+    el.scrollTop = previousTop + (el.scrollHeight - previousHeight);
+  } finally {
+    loadingOlder = false;
+  }
 };
 
-watch(entries, async () => {
-  if (!pinned.value) return;
+const onConversationScroll = () => {
+  const el = conversationEl.value;
+  if (!el) return;
+  pinned.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+  if (el.scrollTop <= 40 && hiddenCount.value) void loadOlder();
+};
+
+watch(entries, async (next, previous) => {
+  if (!pinned.value) {
+    // Arrivals while reading history must not shift the visible window start.
+    visibleCount.value = Math.min(next.length, visibleCount.value + Math.max(0, next.length - previous.length));
+    return;
+  }
   await nextTick();
   const el = conversationEl.value;
   if (el) el.scrollTop = el.scrollHeight;
@@ -98,7 +130,10 @@ const textOf = (entry: ConversationEntry) => (entry.kind === 'tool' ? '' : entry
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <div ref="conversationEl" class="conversation" :aria-label="`${agent.role.replaceAll('_', ' ')} conversation`" @scroll.passive="onConversationScroll">
       <template v-if="entries.length">
-        <template v-for="(entry, index) in entries" :key="index">
+        <button v-if="hiddenCount" class="conversation-older" type="button" @click="() => void loadOlder()">
+          ↑ {{ hiddenCount }} older {{ hiddenCount === 1 ? 'message' : 'messages' }} — scroll up or click to load
+        </button>
+        <template v-for="(entry, index) in visibleEntries" :key="firstVisibleIndex + index">
           <details v-if="toolEntry(entry)" class="conversation-tool">
             <summary>
               <span class="conversation-tool-icon" aria-hidden="true">⌘</span>
