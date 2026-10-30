@@ -471,6 +471,16 @@ pre em { color: var(--faint); }
 }
 .conversation-pending { margin-left: auto; color: var(--accent); }
 .conversation-tool-detail { padding: 10px 12px; border-top: 1px solid var(--border); }
+.conversation-thinking {
+  width: min(100%, 960px); min-width: 0; border: 1px dashed var(--border);
+  background: var(--surface); border-radius: var(--radius);
+}
+.conversation-thinking summary { display: flex; align-items: center; gap: 9px; padding: 9px 12px; cursor: pointer; color: var(--muted); font-size: 13px; }
+.conversation-thinking summary strong { color: var(--muted); font-size: 13px; font-style: italic; }
+.conversation-thinking .conversation-text {
+  padding: 10px 12px; border-top: 1px dashed var(--border);
+  color: var(--muted); font-style: italic; max-height: 350px; overflow: auto;
+}
 .conversation-tool-detail strong { font-size: 12px; color: var(--muted); }
 .conversation-tool-detail pre { margin-top: 6px; }
 .conversation-structured { font-size: 14px; line-height: 1.6; }

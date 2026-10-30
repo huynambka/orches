@@ -1,5 +1,6 @@
 export type ConversationEntry =
   | { kind: 'user' | 'assistant' | 'output'; text: string; pending?: boolean; rpcMode?: boolean }
+  | { kind: 'thinking'; text: string; pending: boolean }
   | { kind: 'tool'; name: string; intent: string; input: string; output: string; callId: string; pending: boolean };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -45,8 +46,33 @@ export function appendConversation(current: ConversationEntry[], lines: string[]
         const last = entries[entries.length - 1];
         if (last?.kind === 'assistant' && last.pending) entries[entries.length - 1] = { ...last, text: last.text + update.delta };
         else entries.push({ kind: 'assistant', text: update.delta, pending: true });
+      } else if (update?.type === 'thinking_start') {
+        entries.push({ kind: 'thinking', text: '', pending: true });
+      } else if (update?.type === 'thinking_delta' && typeof update.delta === 'string' && update.delta) {
+        const last = entries[entries.length - 1];
+        if (last?.kind === 'thinking' && last.pending) entries[entries.length - 1] = { ...last, text: last.text + update.delta };
+        else entries.push({ kind: 'thinking', text: update.delta, pending: true });
+      } else if (update?.type === 'thinking_end') {
+        const index = entries.findLastIndex((entry) => entry.kind === 'thinking' && entry.pending);
+        const text = typeof update.content === 'string' ? update.content : '';
+        if (index === -1) {
+          if (text) entries.push({ kind: 'thinking', text, pending: false });
+        } else {
+          const previous = entries[index];
+          const finalText = text || (previous.kind === 'thinking' ? previous.text : '');
+          // A block that never produced text is noise, not an entry.
+          if (finalText) entries[index] = { kind: 'thinking', text: finalText, pending: false };
+          else entries.splice(index, 1);
+        }
       }
     } else if (event.type === 'message_end' && message?.role === 'assistant') {
+      // A dropped stream must not leave a block stuck on "Thinking…".
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const entry = entries[i];
+        if (entry.kind !== 'thinking' || !entry.pending) continue;
+        if (entry.text) entries[i] = { ...entry, pending: false };
+        else entries.splice(i, 1);
+      }
       const text = contentText(message.content);
       const index = entries.findLastIndex((entry) => entry.kind === 'assistant' && entry.pending);
       if (index !== -1) {

@@ -144,6 +144,14 @@ const textOf = (entry: ConversationEntry) => (entry.kind === 'tool' ? '' : entry
             <div v-if="toolEntry(entry)!.input" class="conversation-tool-detail"><strong>Input</strong><pre>{{ toolEntry(entry)!.input }}</pre></div>
             <div v-if="toolEntry(entry)!.output" class="conversation-tool-detail"><strong>Result</strong><pre>{{ toolEntry(entry)!.output }}</pre></div>
           </details>
+          <details v-else-if="entry.kind === 'thinking'" class="conversation-thinking">
+            <summary>
+              <span class="conversation-tool-icon" aria-hidden="true">∴</span>
+              <strong>Thinking</strong>
+              <span v-if="entry.pending" class="conversation-pending">Thinking…</span>
+            </summary>
+            <div class="conversation-text">{{ entry.text }}</div>
+          </details>
           <details v-else-if="entry.kind === 'user'" class="conversation-input">
             <summary>Input to agent <span class="prompt-closed">Show prompt</span><span class="prompt-open">Hide prompt</span></summary>
             <div class="conversation-text">{{ textOf(entry) }}</div>

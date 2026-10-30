@@ -23,6 +23,7 @@ describe('agent conversation from JSONL', () => {
     ]);
     expect(final).toEqual([
       { kind: 'user', text: 'Summarize the folder' },
+      { kind: 'thinking', text: 'private reasoning', pending: false },
       { kind: 'assistant', text: 'Hello world', pending: false },
     ]);
   });
@@ -37,6 +38,22 @@ describe('agent conversation from JSONL', () => {
     const entries = appendConversation([], events);
     expect(entries.map((entry) => entry.kind === 'tool' ? [entry.intent, entry.output, entry.pending] : [])).toEqual([
       ['Read advisory', 'affected', false], ['Read patch', 'patched', false],
+    ]);
+  });
+
+  it('captures thinking blocks: start/end carries the text, empty blocks are dropped', () => {
+    // Shape observed in stored run artifacts: thinking_start has no text and
+    // thinking_end carries the complete block in `content`.
+    const entries = appendConversation([], [
+      line({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } }),
+      line({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: 'plan the work first' } }),
+      line({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 1 } }),
+      line({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Answer' } }),
+      line({ type: 'message_end', message: assistant('Answer') }),
+    ]);
+    expect(entries).toEqual([
+      { kind: 'thinking', text: 'plan the work first', pending: false },
+      { kind: 'assistant', text: 'Answer', pending: false },
     ]);
   });
 
