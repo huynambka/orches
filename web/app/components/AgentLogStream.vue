@@ -8,6 +8,22 @@ const props = defineProps<{ runId: string; agent: AgentInvocation; stream: 'stdo
 
 const lines = ref<string[]>([]);
 const entries = ref<ConversationEntry[]>([]);
+const conversationEl = ref<HTMLElement | null>(null);
+// Follow new messages only while the reader is at (or near) the bottom; scrolling
+// up pauses the follow, scrolling back down resumes it.
+const pinned = ref(true);
+
+const onConversationScroll = () => {
+  const el = conversationEl.value;
+  if (el) pinned.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+};
+
+watch(entries, async () => {
+  if (!pinned.value) return;
+  await nextTick();
+  const el = conversationEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
+});
 const error = ref('');
 let offset = 0;
 let active = true;
@@ -80,7 +96,7 @@ const textOf = (entry: ConversationEntry) => (entry.kind === 'tool' ? '' : entry
   </details>
   <div v-else class="log-stream">
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
-    <div class="conversation" :aria-label="`${agent.role.replaceAll('_', ' ')} conversation`">
+    <div ref="conversationEl" class="conversation" :aria-label="`${agent.role.replaceAll('_', ' ')} conversation`" @scroll.passive="onConversationScroll">
       <template v-if="entries.length">
         <template v-for="(entry, index) in entries" :key="index">
           <details v-if="toolEntry(entry)" class="conversation-tool">
